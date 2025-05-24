@@ -42,8 +42,8 @@ right_arm_connections = [
 def draw_language_selection():
     screen.fill(black)
 
-    font = pygame.font.Font("/home/b2j/Desktop/AugArms/Font/NotoSansJP-Bold.otf",23)
-    bigfont = pygame.font.Font("/home/b2j/Desktop/AugArms/Font/NotoSansJP-Bold.otf",40)
+    font = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf",23)
+    bigfont = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf",40)
 
     prompt = "Select Language / 言語を選択してください"
     prompt_surface = font.render(prompt, True, white)
@@ -61,7 +61,7 @@ def draw_language_selection():
 
 def draw_motor_readings(index):
     screen.fill(black)
-    font = pygame.font.Font("/home/b2j/Desktop/AugArms/Font/NotoSansJP-Bold.otf", 20)
+    font = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf", 20)
 
     for i in range(0,3):
         for j in range(0,3):
@@ -106,12 +106,12 @@ def draw_motor_readings(index):
         )
     
     # Render Status
-    status_font = pygame.font.Font("/home/b2j/Desktop/AugArms/Font/NotoSansJP-Bold.otf", 16)
+    status_font = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf", 16)
     status_surf = status_font.render(status_text, True, white)
     screen.blit(status_surf, (left_margin, top_margin))
 
     # Render instructions line by line
-    instruction_font = pygame.font.Font("/home/b2j/Desktop/AugArms/Font/NotoSansJP-Bold.otf", 14)
+    instruction_font = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf", 14)
     lines = instructions.split("\n")
     line_height = instruction_font.get_height()
     for i, line in enumerate(lines):
@@ -119,7 +119,7 @@ def draw_motor_readings(index):
         screen.blit(line_surf, (left_margin, top_margin + 40 + i * (line_height + 5)))
     
     #Render Notice line by line
-    notice_font = pygame.font.Font("/home/b2j/Desktop/AugArms/Font/NotoSansJP-Bold.otf", 18)
+    notice_font = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf", 18)
     notice_lines = notice.split("\n")
     notice_start_y = top_margin + 40 + len(lines) * (line_height + 4) + 20
     for i, line in enumerate(notice_lines):
