@@ -39,6 +39,10 @@ cool_blue = (74,198,255)
 warning_orange = (255,190,120)
 soft_red = (250,61,55)
 black = (0,0,0)
+light_green = (82,255,128)
+
+#Icons
+#controller_disconnected_icon = pygame.image.load("/home/b2j/Desktop/AugmentedArms/Icons/controller_icon.png").convert_alpha()
 
 # Right Arm connections
 right_arm_connections = [
@@ -83,7 +87,7 @@ def draw_language_selection():
 
 	# Draw to screen
 	screen.blit(render_surface, (0, 0))
-	pygame.draw.rect(screen, white, render_surface.get_rect(topleft=(0, 0)), 1)
+	pygame.draw.rect(screen, cool_blue, render_surface.get_rect(topleft=(0, 0)), 1)
 	pygame.display.flip()
 
 def draw_motor_readings(index):
@@ -185,12 +189,12 @@ while True:
 			pygame.quit()
 			sys.exit()
 		elif event.type == pygame.JOYDEVICEADDED:
-			if joystick is None and pygame.joystick.get_count() > 0:
-				joystick = pygame.joystick.Joystick(event.device_index)
-				joystick.init()
+			joystick = pygame.joystick.Joystick(event.device_index)
+			joystick.init()
+			joystick_connected = True
 		elif event.type == pygame.JOYDEVICEREMOVED:
-			if joystick is not None and joystick.get_instance_id() == event.instance_id:
-				joystick = None
+			joystick_connected = False
+			joystick = None
 
 		# --- Scene-specific input handling ---
 		if current_scene == SCENE_LANGUAGE_SELECT:
@@ -234,3 +238,4 @@ while True:
 		draw_motor_readings(current_motor_reading)
 
 	clock.tick(30)
+
