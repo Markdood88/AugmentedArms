@@ -3,6 +3,15 @@ import sys
 import random
 
 pygame.init()
+
+#Add Bluetooth controller
+pygame.joystick.init()
+if pygame.joystick.get_count() > 0:
+	joystick = pygame.joystick.Joystick(0)
+	joystick.init()
+else:
+	joystick = None
+
 info = pygame.display.Info()
 screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
 pygame.display.set_caption("Augmented Arms")
@@ -180,6 +189,14 @@ while True:
                         current_motor_reading = (current_motor_reading - 1) % len(motor_readings)
                 elif event.key == pygame.K_RIGHT:
                     current_motor_reading = (current_motor_reading + 1) % len(motor_readings)
+
+        elif event.type == pygame.JOYHATMOTION:
+            if current_scene == SCENE_LANGUAGE_SELECT:
+                hat_x, hat_y = event.value  # event.value is a tuple like (x, y)
+                if hat_x == -1:  # Left
+                    selected_lang_index = (selected_lang_index - 1) % len(languages)
+                elif hat_x == 1:  # Right
+                    selected_lang_index = (selected_lang_index + 1) % len(languages)
 
     if current_scene == SCENE_LANGUAGE_SELECT:
         draw_language_selection()
