@@ -3,10 +3,14 @@ import sys
 import random
 
 pygame.init()
+
+#Joystick Setup
 joystick = None
+joystick_connected = False
 if pygame.joystick.get_count() > 0:
 	joystick = pygame.joystick.Joystick(0)
 	joystick.init()
+	joystick_connected = True
 AXIS_THRESHOLD = 0.8  # adjust if needed
 
 info = pygame.display.Info()
@@ -42,7 +46,9 @@ black = (0,0,0)
 light_green = (82,255,128)
 
 #Icons
-#controller_disconnected_icon = pygame.image.load("/home/b2j/Desktop/AugmentedArms/Icons/controller_icon.png").convert_alpha()
+controller_disconnected_icon = pygame.image.load("/home/b2j/Desktop/AugmentedArms/Icons/controllerdisconnected.png").convert_alpha()
+controller_disconnected_icon_scaled = pygame.transform.scale(controller_disconnected_icon, (45, 45))
+controller_icon_pos = (10, render_surface.get_height() - 55)
 
 # Right Arm connections
 right_arm_connections = [
@@ -137,16 +143,16 @@ def draw_motor_readings(index):
     status_surf = status_font.render(status_text, True, white)
     render_surface.blit(status_surf, (left_margin, top_margin))
 
-    instruction_font = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf", 14)
+    instruction_font = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf", 13)
     lines = instructions.split("\n")
     line_height = instruction_font.get_height()
     for i, line in enumerate(lines):
         line_surf = instruction_font.render(line, True, warning_orange)
-        render_surface.blit(line_surf, (left_margin, top_margin + 40 + i * (line_height + 5)))
+        render_surface.blit(line_surf, (left_margin, top_margin + 35 + i * (line_height + 5)))
     
     notice_font = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf", 18)
     notice_lines = notice.split("\n")
-    notice_start_y = top_margin + 40 + len(lines) * (line_height + 4) + 20
+    notice_start_y = top_margin + 35 + len(lines) * (line_height + 4) + 10
     for i, line in enumerate(notice_lines):
         line_surf = notice_font.render(line, True, white)
         render_surface.blit(line_surf, (left_margin + 5, notice_start_y + i * (notice_font.get_height() + 5)))
@@ -155,7 +161,7 @@ def draw_motor_readings(index):
     gap = 10
     matrix_size = 3
     matrix_start_x = render_surface.get_width() - (circle_radius * 2 * matrix_size + gap * (matrix_size - 1) + 10)
-    matrix_start_y = 170
+    matrix_start_y = 160
 
     for row in range(matrix_size):
         for col in range(matrix_size):
@@ -175,6 +181,8 @@ def draw_motor_readings(index):
                                 (circle_center_x - circle_radius, circle_center_y + circle_radius), 5)
 
     screen.blit(render_surface, (0, 0))
+    if not joystick_connected:
+        screen.blit(controller_disconnected_icon_scaled, controller_icon_pos)
     pygame.draw.rect(screen, white, render_surface.get_rect(topleft=(0, 0)), 1)
     pygame.display.flip()
 
