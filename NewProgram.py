@@ -11,6 +11,7 @@ if pygame.joystick.get_count() > 0:
 	joystick.init()
 else:
 	joystick = None
+AXIS_THRESHOLD = 0.8  # adjust if needed
 
 info = pygame.display.Info()
 screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
@@ -193,9 +194,9 @@ while True:
         elif event.type == pygame.JOYAXISMOTION:
             if current_scene == SCENE_LANGUAGE_SELECT:
                 if event.axis == 0:
-                    if event.value == -1:  # Left
+                    if event.value < -AXIS_THRESHOLD:  # Left
                         selected_lang_index = (selected_lang_index - 1) % len(languages)
-                    elif event.value == 1:  # Right
+                    elif event.value > AXIS_THRESHOLD:  # Right
                         selected_lang_index = (selected_lang_index + 1) % len(languages)
 
     if current_scene == SCENE_LANGUAGE_SELECT:
