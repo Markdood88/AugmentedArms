@@ -52,26 +52,43 @@ right_arm_connections = [
 ]
 
 def draw_language_selection():
-    render_surface.fill(black)
+	render_surface.fill(black)
 
-    font = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf",23)
-    bigfont = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf",40)
+	font = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf", 23)
+	bigfont = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf", 40)
+	smallfont = pygame.font.Font("/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf", 16)
 
-    prompt = "Select Language / 言語を選択してください"
-    prompt_surface = font.render(prompt, True, white)
-    prompt_rect = prompt_surface.get_rect(center=(render_surface.get_width() // 2, render_surface.get_height() // 3))
-    render_surface.blit(prompt_surface, prompt_rect)
+	# Warning if controller not connected
+	if pygame.joystick.get_count() == 0:
+		warning_text = "WARNING: CONTROLLER NOT DETECTED"
+		warning_surface = smallfont.render(warning_text, True, soft_red)
+		warning_rect = warning_surface.get_rect(center=(render_surface.get_width() // 2, 35))
+		render_surface.blit(warning_surface, warning_rect)
 
-    for i, lang in enumerate(languages):
-        color = cool_blue if i == selected_lang_index else white
-        lang_surface = bigfont.render(lang, True, color)
-        offset_x = -100 if i == 0 else 100
-        lang_rect = lang_surface.get_rect(center=(render_surface.get_width() // 2 + offset_x, render_surface.get_height() // 2 + 30))
-        render_surface.blit(lang_surface, lang_rect)
+	# Prompt
+	prompt = "Select Language / 言語を選択してください"
+	prompt_surface = font.render(prompt, True, white)
+	prompt_rect = prompt_surface.get_rect(center=(render_surface.get_width() // 2, render_surface.get_height() // 3 - 30))
+	render_surface.blit(prompt_surface, prompt_rect)
 
-    screen.blit(render_surface, (0, 0))
-    pygame.draw.rect(screen, white, render_surface.get_rect(topleft=(0, 0)), 1)
-    pygame.display.flip()
+	# Languages
+	for i, lang in enumerate(languages):
+		color = cool_blue if i == selected_lang_index else white
+		lang_surface = bigfont.render(lang, True, color)
+		offset_x = -100 if i == 0 else 100
+		lang_rect = lang_surface.get_rect(center=(render_surface.get_width() // 2 + offset_x, render_surface.get_height() // 2))
+		render_surface.blit(lang_surface, lang_rect)
+
+	# Confirm text
+	confirm_text = "Press Z to confirm / 決定するにはZを押してください"
+	confirm_surface = smallfont.render(confirm_text, True, white)
+	confirm_rect = confirm_surface.get_rect(center=(render_surface.get_width() // 2, render_surface.get_height() - 80))
+	render_surface.blit(confirm_surface, confirm_rect)
+
+	# Draw to screen
+	screen.blit(render_surface, (0, 0))
+	pygame.draw.rect(screen, white, render_surface.get_rect(topleft=(0, 0)), 1)
+	pygame.display.flip()
 
 def draw_motor_readings(index):
     render_surface.fill(black)
@@ -163,45 +180,54 @@ def draw_motor_readings(index):
 
 # ---- MAIN LOOP ----
 while True:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
-        
-        elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                pygame.quit()
-                sys.exit()
+	for event in pygame.event.get():
+		# Always allow quitting
+		if event.type == pygame.QUIT:
+			pygame.quit()
+			sys.exit()
+		elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+			pygame.quit()
+			sys.exit()
 
-            if current_scene == SCENE_LANGUAGE_SELECT:
-                if event.key == pygame.K_LEFT:
-                    selected_lang_index = (selected_lang_index - 1) % len(languages)
-                elif event.key == pygame.K_RIGHT:
-                    selected_lang_index = (selected_lang_index + 1) % len(languages)
-                elif event.key == pygame.K_RETURN:
-                    language = "en" if selected_lang_index == 0 else "jp"
-                    current_scene = SCENE_MOTOR_READINGS
-            
-            elif current_scene == SCENE_MOTOR_READINGS:
-                if event.key == pygame.K_LEFT:
-                    if current_motor_reading == 0:
-                        current_scene = SCENE_LANGUAGE_SELECT
-                    else:
-                        current_motor_reading = (current_motor_reading - 1) % len(motor_readings)
-                elif event.key == pygame.K_RIGHT:
-                    current_motor_reading = (current_motor_reading + 1) % len(motor_readings)
+		# --- Scene-specific input handling ---
+		if current_scene == SCENE_LANGUAGE_SELECT:
+			# Keyboard input
+			if event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_LEFT:
+					selected_lang_index = (selected_lang_index - 1) % len(languages)
+				elif event.key == pygame.K_RIGHT:
+					selected_lang_index = (selected_lang_index + 1) % len(languages)
+				elif event.key == pygame.K_RETURN:
+					language = "en" if selected_lang_index == 0 else "jp"
+					current_scene = SCENE_MOTOR_READINGS
 
-        elif event.type == pygame.JOYAXISMOTION:
-            if current_scene == SCENE_LANGUAGE_SELECT:
-                if event.axis == 0:
-                    if event.value < -AXIS_THRESHOLD:  # Left
-                        selected_lang_index = (selected_lang_index - 1) % len(languages)
-                    elif event.value > AXIS_THRESHOLD:  # Right
-                        selected_lang_index = (selected_lang_index + 1) % len(languages)
+			# Gamepad axis (D-pad)
+			elif event.type == pygame.JOYAXISMOTION and event.axis == 0:
+				if event.value < -AXIS_THRESHOLD:
+					selected_lang_index = (selected_lang_index - 1) % len(languages)
+				elif event.value > AXIS_THRESHOLD:
+					selected_lang_index = (selected_lang_index + 1) % len(languages)
 
-    if current_scene == SCENE_LANGUAGE_SELECT:
-        draw_language_selection()
-    elif current_scene == SCENE_MOTOR_READINGS:
-        draw_motor_readings(current_motor_reading)
-    
-    clock.tick(30)
+			# Gamepad button
+			elif event.type == pygame.JOYBUTTONDOWN and event.button == 6:  # Z button
+				language = "en" if selected_lang_index == 0 else "jp"
+				current_scene = SCENE_MOTOR_READINGS
+
+		elif current_scene == SCENE_MOTOR_READINGS:
+			# Keyboard input
+			if event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_LEFT:
+					if current_motor_reading == 0:
+						current_scene = SCENE_LANGUAGE_SELECT
+					else:
+						current_motor_reading = (current_motor_reading - 1) % len(motor_readings)
+				elif event.key == pygame.K_RIGHT:
+					current_motor_reading = (current_motor_reading + 1) % len(motor_readings)
+
+	# --- Scene drawing ---
+	if current_scene == SCENE_LANGUAGE_SELECT:
+		draw_language_selection()
+	elif current_scene == SCENE_MOTOR_READINGS:
+		draw_motor_readings(current_motor_reading)
+
+	clock.tick(30)
