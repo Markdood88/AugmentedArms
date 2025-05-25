@@ -190,13 +190,13 @@ while True:
                 elif event.key == pygame.K_RIGHT:
                     current_motor_reading = (current_motor_reading + 1) % len(motor_readings)
 
-        elif event.type == pygame.JOYHATMOTION:
+        elif event.type == pygame.JOYAXISMOTION:
             if current_scene == SCENE_LANGUAGE_SELECT:
-                hat_x, hat_y = event.value  # event.value is a tuple like (x, y)
-                if hat_x == -1:  # Left
-                    selected_lang_index = (selected_lang_index - 1) % len(languages)
-                elif hat_x == 1:  # Right
-                    selected_lang_index = (selected_lang_index + 1) % len(languages)
+                if event.axis == 0:
+                    if event.value == -1:  # Left
+                        selected_lang_index = (selected_lang_index - 1) % len(languages)
+                    elif event.value == 1:  # Right
+                        selected_lang_index = (selected_lang_index + 1) % len(languages)
 
     if current_scene == SCENE_LANGUAGE_SELECT:
         draw_language_selection()
