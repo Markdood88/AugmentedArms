@@ -3,14 +3,10 @@ import sys
 import random
 
 pygame.init()
-
-#Add Bluetooth controller
-pygame.joystick.init()
+joystick = None
 if pygame.joystick.get_count() > 0:
 	joystick = pygame.joystick.Joystick(0)
 	joystick.init()
-else:
-	joystick = None
 AXIS_THRESHOLD = 0.8  # adjust if needed
 
 info = pygame.display.Info()
@@ -188,6 +184,13 @@ while True:
 		elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
 			pygame.quit()
 			sys.exit()
+		elif event.type == pygame.JOYDEVICEADDED:
+			if joystick is None and pygame.joystick.get_count() > 0:
+				joystick = pygame.joystick.Joystick(event.device_index)
+				joystick.init()
+		elif event.type == pygame.JOYDEVICEREMOVED:
+			if joystick is not None and joystick.get_instance_id() == event.instance_id:
+				joystick = None
 
 		# --- Scene-specific input handling ---
 		if current_scene == SCENE_LANGUAGE_SELECT:
