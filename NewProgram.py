@@ -1,6 +1,7 @@
 import pygame
 import sys
 import random
+import math
 from dynamixel_sdk import *
 
 # Dynamixel Vars
@@ -84,20 +85,20 @@ left_arm_connections = [
 def ping_arm(index):
 	global rightArmPort, leftArmPort, packetHandler
 	
-	if index == 1: #Right Arm
+	if index == 0: #Right Arm
 		for i in range(1, 10):
 			model_number, result, error = packetHandler.ping(rightArmPort, i)
 			if result == COMM_SUCCESS and error == 0:
-				right_arm_connections[math.floor((i-1)/3),(i-1)%3] = 1
+				right_arm_connections[math.floor((i-1)/3)][(i-1)%3] = 1
 			else:
-				right_arm_connections[math.floor((i-1)/3),(i-1)%3] = 0
-	if index == 0:  #Left Arm
+				right_arm_connections[math.floor((i-1)/3)][(i-1)%3] = 0
+	if index == 1:  #Left Arm
 		for i in range(10, 18):
 			model_number, result, error = packetHandler.ping(leftArmPort, i)
 			if result == COMM_SUCCESS and error == 0:
-				left_arm_connections[math.floor((i-10)/3),(i-10)%3] = 1
+				left_arm_connections[math.floor((i-10)/3)][(i-10)%3] = 1
 			else:
-				left_arm_connections[math.floor((i-10)/3),(i-10)%3] = 0
+				left_arm_connections[math.floor((i-10)/3)][(i-10)%3] = 0
 	
 
 def draw_language_selection():
