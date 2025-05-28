@@ -1,10 +1,28 @@
 import pygame
 import sys
 import random
+from dynamixel_sdk import *
 
+# Dynamixel Vars
+LEFTARM_NAME = '/dev/ttyUSB0'
+RIGHTARM_NAME = '/dev/ttyUSB1'
+BAUDRATE = 115200
+PROTOCOL_VERSION = 2.0
+
+# Initialize ports and packetHandler
+rightArmPort = PortHandler(RIGHTARM_NAME)
+leftArmPort = PortHandler(LEFTARM_NAME)
+packetHandler = PacketHandler(PROTOCOL_VERSION) # For sending messages
+
+rightArmPort.openPort()
+leftArmPort.openPort()
+rightArmPort.setBaudRate(BAUDRATE)
+leftArmPort.setBaudRate(BAUDRATE)
+
+# Pygame to Render
 pygame.init()
 
-#Joystick Setup
+# Joystick Setup
 joystick = None
 joystick_connected = False
 if pygame.joystick.get_count() > 0:
@@ -50,12 +68,37 @@ controller_disconnected_icon = pygame.image.load("/home/b2j/Desktop/AugmentedArm
 controller_disconnected_icon_scaled = pygame.transform.scale(controller_disconnected_icon, (45, 45))
 controller_icon_pos = (10, render_surface.get_height() - 55)
 
-# Right Arm connections
+# Arm connections
 right_arm_connections = [
 	[1, 1, 1],
 	[1, 1, 1],
 	[1, 1, 1]
 ]
+
+left_arm_connections = [
+	[1, 1, 1],
+	[1, 1, 1],
+	[1, 1, 1]
+]
+
+def ping_arm(index):
+	global rightArmPort, leftArmPort, packetHandler
+	
+	if index == 1: #Right Arm
+		for i in range(1, 10):
+			model_number, result, error = packetHandler.ping(rightArmPort, i)
+			if result == COMM_SUCCESS and error == 0:
+				right_arm_connections[math.floor((i-1)/3),(i-1)%3] = 1
+			else:
+				right_arm_connections[math.floor((i-1)/3),(i-1)%3] = 0
+	if index == 0:  #Left Arm
+		for i in range(10, 18):
+			model_number, result, error = packetHandler.ping(leftArmPort, i)
+			if result == COMM_SUCCESS and error == 0:
+				left_arm_connections[math.floor((i-10)/3),(i-10)%3] = 1
+			else:
+				left_arm_connections[math.floor((i-10)/3),(i-10)%3] = 0
+	
 
 def draw_language_selection():
 	render_surface.fill(black)
