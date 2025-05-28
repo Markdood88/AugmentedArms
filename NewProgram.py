@@ -151,9 +151,12 @@ def draw_motor_readings(index):
 	controls_font = pygame.font.Font(font_path, 30)
 
 	# Randomize connection data for testing
-	for i in range(3):
+	'''for i in range(3):
 		for j in range(3):
-			right_arm_connections[i][j] = 1 if random.uniform(0, 1) > 0.001 else 0
+			right_arm_connections[i][j] = 1 if random.uniform(0, 1) > 0.001 else 0'''
+
+	# Live Arm Ping
+	ping_arm(index)
 
 	# Margins and positions
 	left_margin = 15
