@@ -3,6 +3,7 @@ import sys
 import random
 import math
 import threading
+import Arm_Utils
 from dynamixel_sdk import *
 
 def detect_arm_ports():
@@ -32,22 +33,22 @@ def detect_arm_ports():
 def ping_arm(index):
 
 	def worker():
-		global rightArmPort, leftArmPort, packetHandler
+		global RightArm, LeftArm
 		
 		if index == 0: #Right Arm
 			for i in range(1, 10):
-				model_number, result, error = packetHandler.ping(rightArmPort, i)
+				model_number, result, error = RightArm.packetHandler.ping(RightArm.portHandler, i)
 				if result == COMM_SUCCESS and error == 0:
-					right_arm_connections[math.floor((i-1)/3)][(i-1)%3] = 1
+					right_arm_motors_alive[math.floor((i-1)/3)][(i-1)%3] = 1
 				else:
-					right_arm_connections[math.floor((i-1)/3)][(i-1)%3] = 0
+					right_arm_motors_alive[math.floor((i-1)/3)][(i-1)%3] = 0
 		if index == 1:  #Left Arm
 			for i in range(10, 18):
-				model_number, result, error = packetHandler.ping(leftArmPort, i)
+				model_number, result, error = LeftArm.packetHandler.ping(LeftArm.portHandler, i)
 				if result == COMM_SUCCESS and error == 0:
-					left_arm_connections[math.floor((i-10)/3)][(i-10)%3] = 1
+					left_arm_motors_alive[math.floor((i-10)/3)][(i-10)%3] = 1
 				else:
-					left_arm_connections[math.floor((i-10)/3)][(i-10)%3] = 0
+					left_arm_motors_alive[math.floor((i-10)/3)][(i-10)%3] = 0
 	
 	threading.Thread(target=worker, daemon=True).start()
 
@@ -106,7 +107,7 @@ def draw_motor_readings(index):
 		for j in range(3):
 			right_arm_connections[i][j] = 1 if random.uniform(0, 1) > 0.001 else 0'''
 
-	# Live Arm Ping
+	# Ping for motor alive values
 	ping_arm(index)
 
 	# Margins and positions
@@ -115,9 +116,9 @@ def draw_motor_readings(index):
 	text_spacing = 5
 	port = ''
 	if index == 0:
-		port = RIGHTARM_NAME
+		port = RIGHTARM_PORT_NAME
 	elif index == 1:	
-		port = LEFTARM_NAME
+		port = LEFTARM_PORT_NAME
 
 	# Text blocks based on language
 	if language == "en":
@@ -190,7 +191,7 @@ def draw_motor_readings(index):
 			cy = grid_y + row * (circle_radius * 2 + gap)
 			num = row * matrix_size + col + 1 + (current_motor_reading * 9)
 
-			if right_arm_connections[row][col] == 1:
+			if right_arm_motors_alive[row][col] == 1:
 				pygame.draw.circle(render_surface, white, (cx, cy), circle_radius, 1)
 				num_surf = title_font.render(str(num), True, white)
 				num_rect = num_surf.get_rect(center=(cx, cy))
@@ -204,7 +205,7 @@ def draw_motor_readings(index):
 	if not joystick_connected:
 		screen.blit(controller_disconnected_icon_scaled, controller_icon_pos)
 
-	pygame.draw.rect(screen, white, render_surface.get_rect(topleft=(0, 0)), 1)
+	pygame.draw.rect(screen, cool_blue, render_surface.get_rect(topleft=(0, 0)), 1)
 	pygame.display.flip()
 
 def draw_lock_release():
@@ -232,12 +233,12 @@ def draw_lock_release():
 	message_lines = message.split("\n")
 	for i, line in enumerate(message_lines):
 		line_surf = message_font.render(line, True, white)
-		render_surface.blit(line_surf, (30, 20 + i * (message_font.get_height() + 5)))
+		render_surface.blit(line_surf, (30, 25 + i * (message_font.get_height() + 5)))
 
 	# Render controls (top right)
 	controls_lines = controls.split("\n")
 	controls_x = 325
-	controls_y = 20
+	controls_y = 25
 	for i, line in enumerate(controls_lines):
 		line_surf = controls_font.render(line, True, white)
 		y = controls_y + i * (controls_font.get_height() + 5)
@@ -301,62 +302,53 @@ def draw_lock_release():
 	if not joystick_connected:
 		screen.blit(controller_disconnected_icon_scaled, controller_icon_pos)
 
-	pygame.draw.rect(screen, white, render_surface.get_rect(topleft=(0, 0)), 1)
+	pygame.draw.rect(screen, cool_blue, render_surface.get_rect(topleft=(0, 0)), 1)
 	pygame.display.flip()
+
+#----VARIABLES
+
+# Developer Mode
+DEVELOPER_MODE = True
 
 # Scene Vars
 SCENE_LANGUAGE_SELECT = "language_select"
 SCENE_MOTOR_READINGS = "motor_readings"
 SCENE_LOCK_RELEASE = "lock_release"
+current_scene = SCENE_LOCK_RELEASE
 
 # Language Vars
 language = "en"
-selecting_language = True
 languages = ["English", "日本語"]
 selected_lang_index = 0
-
-current_scene = SCENE_LOCK_RELEASE
 motor_readings = ["Right Arm", "Left Arm"]
 motor_readings_jp = ["右アーム", "左アーム"]
-expected_ports = ["/dev/ttyUSB1", "/dev/ttyUSB0"]
+expected_ports = ["/dev/ttyUSB1", "/dev/ttyUSB0"] #Right First, Left Second
 current_motor_reading = 0
 
 # Dynamixel Vars
-LEFTARM_NAME = ''
-RIGHTARM_NAME = ''
+RIGHTARM_PORT_NAME = ''
+LEFTARM_PORT_NAME = ''
 BAUDRATE = 115200
 PROTOCOL_VERSION = 2.0
 
-# Initialize ports and packetHandler
-RIGHTARM_NAME, LEFTARM_NAME = detect_arm_ports()
-rightArmPort = PortHandler(RIGHTARM_NAME)
-leftArmPort = PortHandler(LEFTARM_NAME)
-packetHandler = PacketHandler(PROTOCOL_VERSION) # For sending messages
-
-rightArmPort.openPort()
-leftArmPort.openPort()
-rightArmPort.setBaudRate(BAUDRATE)
-leftArmPort.setBaudRate(BAUDRATE)
-
-# Pygame to Render
-pygame.init()
+# Arm connections && Motor Status
+RightArm = None
+LeftArm = None
+right_arm_motors_alive = [
+	[1, 1, 1],
+	[1, 1, 1],
+	[1, 1, 1]
+]
+left_arm_motors_alive = [
+	[1, 1, 1],
+	[1, 1, 1],
+	[1, 1, 1]
+]
 
 # Joystick Setup
 joystick = None
 joystick_connected = False
-if pygame.joystick.get_count() > 0:
-	joystick = pygame.joystick.Joystick(0)
-	joystick.init()
-	joystick_connected = True
-AXIS_THRESHOLD = 0.8  # adjust if needed
-
-info = pygame.display.Info()
-screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
-pygame.display.set_caption("Augmented Arms")
-clock = pygame.time.Clock()
-
-# Surface for drawing visuals (480x320)
-render_surface = pygame.Surface((480, 320))
+AXIS_THRESHOLD = 0.8  #DPad minimum change
 
 # Colors
 white = (217,217,217)
@@ -369,22 +361,36 @@ black = (0,0,0)
 light_green = (82,255,128)
 green = (0,200,0)
 
+#----Start of Code
+
+# Initialize Arms and packetHandlers
+if not DEVELOPER_MODE:
+	RIGHTARM_PORT_NAME, LEFTARM_PORT_NAME = detect_arm_ports()
+	RightArm = RoboticArm(RIGHTARM_PORT_NAME, [1,2,3,4,5,6,7,8,9])
+	LeftArm = RoboticArm(LEFTARM_PORT_NAME, [10,11,12,13,14,15,16,17,18])
+	RightArm.open_port()
+	LeftArm.open_port()
+
+# Initialize Pygame
+pygame.init()
+
+#Create Display
+info = pygame.display.Info()
+screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
+pygame.display.set_caption("Augmented Arms")
+clock = pygame.time.Clock()
+render_surface = pygame.Surface((480, 320))
+
+#Init Joysticks
+if pygame.joystick.get_count() > 0:
+	joystick = pygame.joystick.Joystick(0)
+	joystick.init()
+	joystick_connected = True
+
 #Icons
 controller_disconnected_icon = pygame.image.load("/home/b2j/Desktop/AugmentedArms/Icons/controllerdisconnected.png").convert_alpha()
 controller_disconnected_icon_scaled = pygame.transform.scale(controller_disconnected_icon, (45, 45))
 controller_icon_pos = (10, render_surface.get_height() - 55)
-
-# Arm connections
-right_arm_connections = [
-	[1, 1, 1],
-	[1, 1, 1],
-	[1, 1, 1]
-]
-left_arm_connections = [
-	[1, 1, 1],
-	[1, 1, 1],
-	[1, 1, 1]
-]
 
 # ---- MAIN LOOP ----
 while True:
