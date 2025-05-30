@@ -243,9 +243,16 @@ def draw_lock_release():
 		y = controls_y + i * (controls_font.get_height() + 5)
 		render_surface.blit(line_surf, (controls_x, y))
 
-	# Check button states
-	l_held = joystick.get_button(8) == 1
-	r_held = joystick.get_button(9) == 1
+	# Safe button check
+	l_held = False
+	r_held = False
+	if joystick_connected and joystick:
+		try:
+			l_held = joystick.get_button(8) == 1
+			r_held = joystick.get_button(9) == 1
+		except pygame.error:
+			l_held = False
+			r_held = False
 
 	# Colors depending on button state
 	lock_pill_color = green if l_held else red  # green if held else red
