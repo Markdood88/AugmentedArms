@@ -31,6 +31,7 @@ class RoboticArm:
     # Communication-result constants
     COMM_SUCCESS = 0
     COMM_TX_FAIL = -1001
+    COMM_RX_TIMEOUT = -1000
     
     def __init__(self, device_name, dxl_ids, is_admin=False):
         self.device_name = device_name
@@ -85,3 +86,35 @@ class RoboticArm:
             else:
                 logging.error(f"{self.device_name}: Failed to open port.")
                 return False
+    
+    def update_torque_status(self):
+        """Refresh torque-enabled cache for all motors."""
+        for dxl_id in self.dxl_ids:
+            torque_enabled, dxl_comm_result, dxl_error = \
+                self.packetHandler.read1ByteTxRx(
+                    self.portHandler, dxl_id,
+                    self.ADDR_PRO_TORQUE_ENABLE)
+            if dxl_comm_result == self.COMM_SUCCESS and dxl_error == 0:
+                self.torque_enabled[dxl_id] = \
+                    (torque_enabled == self.TORQUE_ENABLE)
+            else:
+                self.torque_enabled[dxl_id] = None
+
+    def ping_motors(self):
+        with self.lock:
+            if not self.port_is_open:
+                logging.warning(f"{self.device_name}: Port not open.")
+                return []
+            successful_ids = []
+            for dxl_id in self.dxl_ids:
+                try:
+                    dxl_model_number, dxl_comm_result, dxl_error = self.packetHandler.ping(self.portHandler, dxl_id)
+                    if dxl_comm_result == self.COMM_SUCCESS:
+                        logging.info(f"{self.device_name} ID {dxl_id}: Ping successful.")
+                        successful_ids.append(dxl_id)
+                    else:
+                        logging.warning(f"{self.device_name} ID {dxl_id}: Ping failed: "
+                                        f"{self.packetHandler.getTxRxResult(dxl_comm_result)}")
+                except Exception as e:
+                    logging.error(f"{self.device_name} ID {dxl_id}: Exception during ping: {e}")
+            return successful_ids
