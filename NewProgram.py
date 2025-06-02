@@ -6,6 +6,9 @@ import threading
 import Arm_Utils
 from dynamixel_sdk import *
 
+def match_lists(expected, actual):
+	return [1 if val in actual else 0 for val in expected]
+
 def detect_arm_ports():
 
 	global expected_ports
@@ -18,12 +21,12 @@ def detect_arm_ports():
 		if handler.openPort():
 			handler.setBaudRate(BAUDRATE)
 			packetHandler = PacketHandler(PROTOCOL_VERSION)
-			# Check if motor ID 1 (right) or ID 10 (left) responds
+			# Check if motor ID 1 (right) or ID 11 (left) responds
 			model, result, error = packetHandler.ping(handler, 1)
 			if result == COMM_SUCCESS:
 				right_arm = port
 			else:
-				model, result, error = packetHandler.ping(handler, 10)
+				model, result, error = packetHandler.ping(handler, 11)
 				if result == COMM_SUCCESS:
 					left_arm = port
 			handler.closePort()
@@ -33,24 +36,17 @@ def detect_arm_ports():
 def ping_arm(index):
 
 	def worker():
-		global RightArm, LeftArm
+		global RightArm, LeftArm, right_arm_motors_alive, left_arm_motors_alive
 		
-		if index == 0: #Right Arm
-			for i in range(1, 10):
-				model_number, result, error = RightArm.packetHandler.ping(RightArm.portHandler, i)
-				if result == COMM_SUCCESS and error == 0:
-					right_arm_motors_alive[math.floor((i-1)/3)][(i-1)%3] = 1
-				else:
-					right_arm_motors_alive[math.floor((i-1)/3)][(i-1)%3] = 0
-		if index == 1:  #Left Arm
-			for i in range(10, 18):
-				model_number, result, error = LeftArm.packetHandler.ping(LeftArm.portHandler, i)
-				if result == COMM_SUCCESS and error == 0:
-					left_arm_motors_alive[math.floor((i-10)/3)][(i-10)%3] = 1
-				else:
-					left_arm_motors_alive[math.floor((i-10)/3)][(i-10)%3] = 0
-	
+		if index == 0: #Right Arm 1-9
+			successful_ids = RightArm.ping_motors()
+			right_arm_motors_alive = match_lists(right_arm_expected_motors, successful_ids)
+		if index == 1:  #Left Arm 11-18
+			successful_ids = LeftArm.ping_motors()
+			left_arm_motors_alive = match_lists(left_arm_expected_motors, successful_ids)
+
 	threading.Thread(target=worker, daemon=True).start()
+
 
 def draw_language_selection():
 	render_surface.fill(black)
@@ -101,11 +97,6 @@ def draw_motor_readings(index):
 	instruction_font = pygame.font.Font(font_path, 13)
 	notice_font = pygame.font.Font(font_path, 18)
 	controls_font = pygame.font.Font(font_path, 30)
-
-	# Randomize connection data for testing
-	'''for i in range(3):
-		for j in range(3):
-			right_arm_connections[i][j] = 1 if random.uniform(0, 1) > 0.001 else 0'''
 
 	# Ping for motor alive values
 	ping_arm(index)
@@ -185,13 +176,22 @@ def draw_motor_readings(index):
 	grid_x = render_surface.get_width() - (circle_radius * 2 * matrix_size + gap * (matrix_size - 1) + 10)
 	grid_y = 160
 
+	if index == 0:
+		motor_status = right_arm_motors_alive
+	elif index == 1:
+		motor_status = left_arm_motors_alive
+
 	for row in range(matrix_size):
 		for col in range(matrix_size):
+			idx = row * matrix_size + col
+			if idx >= len(motor_status):
+				continue  # skip if index is out of bounds
+
 			cx = grid_x + col * (circle_radius * 2 + gap)
 			cy = grid_y + row * (circle_radius * 2 + gap)
-			num = row * matrix_size + col + 1 + (current_motor_reading * 9)
+			num = idx + 1 + (current_motor_reading * 10)
 
-			if right_arm_motors_alive[row][col] == 1:
+			if motor_status[idx] == 1:
 				pygame.draw.circle(render_surface, white, (cx, cy), circle_radius, 1)
 				num_surf = title_font.render(str(num), True, white)
 				num_rect = num_surf.get_rect(center=(cx, cy))
@@ -308,13 +308,13 @@ def draw_lock_release():
 #----VARIABLES
 
 # Developer Mode
-DEVELOPER_MODE = True
+DEVELOPER_MODE = False
 
 # Scene Vars
 SCENE_LANGUAGE_SELECT = "language_select"
 SCENE_MOTOR_READINGS = "motor_readings"
 SCENE_LOCK_RELEASE = "lock_release"
-current_scene = SCENE_LOCK_RELEASE
+current_scene = SCENE_LANGUAGE_SELECT
 
 # Language Vars
 language = "en"
@@ -334,16 +334,10 @@ PROTOCOL_VERSION = 2.0
 # Arm connections && Motor Status
 RightArm = None
 LeftArm = None
-right_arm_motors_alive = [
-	[1, 1, 1],
-	[1, 1, 1],
-	[1, 1, 1]
-]
-left_arm_motors_alive = [
-	[1, 1, 1],
-	[1, 1, 1],
-	[1, 1, 1]
-]
+right_arm_expected_motors = [1,2,3,4,5,6,7,8,9] #9 Motors
+left_arm_expected_motors = [11,12,13,14,15,16,17,18] #8 Motors
+right_arm_motors_alive = [0,0,0,0,0,0,0,0,0] #9 Values
+left_arm_motors_alive = [0,0,0,0,0,0,0,0] #8 Values
 
 # Joystick Setup
 joystick = None
@@ -366,8 +360,8 @@ green = (0,200,0)
 # Initialize Arms and packetHandlers
 if not DEVELOPER_MODE:
 	RIGHTARM_PORT_NAME, LEFTARM_PORT_NAME = detect_arm_ports()
-	RightArm = RoboticArm(RIGHTARM_PORT_NAME, [1,2,3,4,5,6,7,8,9])
-	LeftArm = RoboticArm(LEFTARM_PORT_NAME, [10,11,12,13,14,15,16,17,18])
+	RightArm = Arm_Utils.RoboticArm(RIGHTARM_PORT_NAME, [1,2,3,4,5,6,7,8,9]) #9 Motors
+	LeftArm = Arm_Utils.RoboticArm(LEFTARM_PORT_NAME, [11,12,13,14,15,16,17,18]) #8 Motors
 	RightArm.open_port()
 	LeftArm.open_port()
 
