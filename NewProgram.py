@@ -16,6 +16,7 @@ def detect_arm_ports():
 	right_arm = expected_ports[0]
 	left_arm = expected_ports[1]
 
+
 	for port in expected_ports:
 		handler = PortHandler(port)
 		if handler.openPort():
@@ -46,7 +47,6 @@ def ping_arm(index):
 			left_arm_motors_alive = match_lists(left_arm_expected_motors, successful_ids)
 
 	threading.Thread(target=worker, daemon=True).start()
-
 
 def draw_language_selection():
 	render_surface.fill(black)
@@ -216,6 +216,7 @@ def draw_lock_release():
 	message_font = pygame.font.Font(font_path, 30)
 	controls_font = pygame.font.Font(font_path, 30)
 	button_font = pygame.font.Font(font_path, 40)
+	warning_font = pygame.font.Font(font_path, 18)
 
 	# Text by language
 	if language == "en":
@@ -223,11 +224,15 @@ def draw_lock_release():
 		controls = "Z: NEXT\nX: BACK"
 		lock_text = "LOCK"
 		release_text = "RELEASE"
+		warning_text = "In case of failure, please contact support"
+	
 	else:
 		message = "ロックと解除を\nテストしてください"
 		controls = "Z: 次へ\nX: 戻る"
 		lock_text = "ロック"
 		release_text = "解除"
+		warning_text = "不具合時はサポートへ連絡ください"
+	
 
 	# Render top-left message (multi-line)
 	message_lines = message.split("\n")
@@ -254,6 +259,13 @@ def draw_lock_release():
 		except pygame.error:
 			l_held = False
 			r_held = False
+   
+   	# Keyboard input
+	keys = pygame.key.get_pressed()
+	if keys[pygame.K_l]:
+		l_held = True
+	if keys[pygame.K_r]:
+		r_held = True
 
 	# Colors depending on button state
 	lock_pill_color = green if l_held else red  # green if held else red
@@ -263,7 +275,7 @@ def draw_lock_release():
 	release_text_color = light_green if r_held else white
 
 	# Render LOCK and RELEASE text centered horizontally, below message and controls
-	mid_y = 140
+	mid_y = 125
 	lock_surf = button_font.render(lock_text, True, lock_text_color)
 	release_surf = button_font.render(release_text, True, release_text_color)
 
@@ -279,7 +291,7 @@ def draw_lock_release():
 	render_surface.blit(release_surf, (release_x - release_surf.get_width()//2, mid_y))
 
 	# Draw red pill-shaped capsules under the LOCK and RELEASE text
-	capsule_width, capsule_height = 100, 40
+	capsule_width, capsule_height = 100, 50
 	text_color = white
 
 	def draw_pill(surface, x, y, w, h, color, text):
@@ -290,12 +302,17 @@ def draw_lock_release():
 		pygame.draw.rect(surface, color, (x + radius, y, w - 2*radius, h))
 		# draw text centered in pill
 		text_surf = button_font.render(text, True, text_color)
-		text_rect = text_surf.get_rect(center=(x + w//2, y + h//2))
+		text_rect = text_surf.get_rect(center=(x + w//2, -2 + y + h//2))
 		surface.blit(text_surf, text_rect)
 
 	pill_y = mid_y + lock_surf.get_height() + 15
 	draw_pill(render_surface, lock_x - capsule_width//2, pill_y, capsule_width, capsule_height, lock_pill_color, "L")
 	draw_pill(render_surface, release_x - capsule_width//2, pill_y, capsule_width, capsule_height, release_pill_color, "R")
+
+	# Final warning message at the bottom
+	warning_surf = warning_font.render(warning_text, True, white)
+	warning_rect = warning_surf.get_rect(center=(render_surface.get_width() // 2, render_surface.get_height() - 35))
+	render_surface.blit(warning_surf, warning_rect)
 
 	# Final blits and outline
 	screen.blit(render_surface, (0, 0))
@@ -305,16 +322,97 @@ def draw_lock_release():
 	pygame.draw.rect(screen, cool_blue, render_surface.get_rect(topleft=(0, 0)), 1)
 	pygame.display.flip()
 
+def draw_recording_stage():
+	global recording_states
+	render_surface.fill(black)
+
+	# Fonts
+	font_path = "/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf"
+	title_font = pygame.font.Font(font_path, 30)
+	label_font = pygame.font.Font(font_path, 22)
+	status_font = pygame.font.Font(font_path, 25)
+	letter_font = pygame.font.Font(font_path, 36)
+ 
+   	# Keyboard input
+	keys = pygame.key.get_pressed()
+	if keys[pygame.K_1]:
+		recording_states[0] = not recording_states[0]
+		pygame.time.wait(200)
+	if keys[pygame.K_2]:
+		recording_states[1] = not recording_states[1]
+		pygame.time.wait(200)
+	if keys[pygame.K_3]:
+		recording_states[2] = not recording_states[2]
+		pygame.time.wait(200)
+
+	# Text by language
+	if language == "en":
+		title_text = "Record Today's Animations"
+		press_texts = ["Press X to", "Press Y to", "Press Z to"]
+		status_texts = ["STOP" if toggle else "START" for toggle in recording_states]
+		playback_labels = ["Playback 1", "Playback 2", "Playback 3"]
+	else:
+		title_text = "今日のアニメーションを記録"
+		press_texts = ["X を押すと", "Y を押すと", "Z を押すと"]
+		status_texts = ["停止" if toggle else "開始" for toggle in recording_states]
+		playback_labels = ["再生 1", "再生 2", "再生 3"]
+
+	# Top Title
+	title_surf = title_font.render(title_text, True, white)
+	title_rect = title_surf.get_rect(center=(render_surface.get_width() // 2, 40))
+	render_surface.blit(title_surf, title_rect)
+
+	# Setup for columns
+	center_x = render_surface.get_width() // 2
+	section_spacing = 140
+	base_y = 90
+
+	for i in range(3):
+		section_x = center_x + (i - 1) * section_spacing
+
+		# "Press X/Y/Z to"
+		press_surf = label_font.render(press_texts[i], True, white)
+		press_rect = press_surf.get_rect(center=(section_x, base_y))
+		render_surface.blit(press_surf, press_rect)
+
+		# "START"/"STOP"
+		status_surf = status_font.render(status_texts[i], True, red if status_texts[i] in ["START", "開始"] else green)
+		status_rect = status_surf.get_rect(center=(section_x, base_y + 40))
+		render_surface.blit(status_surf, status_rect)
+
+		# "Playback 1/2/3"
+		playback_surf = label_font.render(playback_labels[i], True, white)
+		playback_rect = playback_surf.get_rect(center=(section_x, base_y + 90))
+		render_surface.blit(playback_surf, playback_rect)
+
+		# Circle with letter A/B/C and color Green/Blue/Yellow
+		circle_y = base_y + 150
+		colors = [mint_green, yellow, dark_blue]
+		letters = ["A", "B", "C"]
+		pygame.draw.circle(render_surface, colors[i], (section_x, circle_y), 25)
+		letter_surf = letter_font.render(letters[i], True, black)
+		letter_rect = letter_surf.get_rect(center=(section_x, circle_y-2))
+		render_surface.blit(letter_surf, letter_rect)
+
+	# Final display
+	screen.blit(render_surface, (0, 0))
+	if not joystick_connected:
+		screen.blit(controller_disconnected_icon_scaled, controller_icon_pos)
+  
+	pygame.draw.rect(screen, cool_blue, render_surface.get_rect(topleft=(0, 0)), 1)
+	pygame.display.flip()
+
 #----VARIABLES
 
 # Developer Mode
-DEVELOPER_MODE = False
+DEVELOPER_MODE = True
 
 # Scene Vars
 SCENE_LANGUAGE_SELECT = "language_select"
 SCENE_MOTOR_READINGS = "motor_readings"
 SCENE_LOCK_RELEASE = "lock_release"
-current_scene = SCENE_LANGUAGE_SELECT
+SCENE_RECORDING_STAGE = "recording_stage"
+current_scene = SCENE_LOCK_RELEASE
 
 # Language Vars
 language = "en"
@@ -346,7 +444,8 @@ AXIS_THRESHOLD = 0.8  #DPad minimum change
 
 # Colors
 white = (217,217,217)
-blue = (0,0,255)
+blue = (23,100,255)
+dark_blue = (2,43,245)
 cool_blue = (74,198,255)
 warning_orange = (255,190,120)
 soft_red = (250,61,55)
@@ -354,6 +453,11 @@ red = (200,0,0)
 black = (0,0,0)
 light_green = (82,255,128)
 green = (0,200,0)
+mint_green = (62,173,112)
+yellow = (252,243,71)
+
+#Recording States
+recording_states = [False, False, False]
 
 #----Start of Code
 
@@ -403,6 +507,13 @@ while True:
 		elif event.type == pygame.JOYDEVICEREMOVED:
 			joystick_connected = False
 			joystick = None
+
+		# Developer Language Toggle
+		if DEVELOPER_MODE and event.type == pygame.KEYDOWN and event.key == pygame.K_j:
+			if language == "en":
+				language = "jp"
+			else:
+				language = "en"
 
 		# --- Scene-specific input handling ---
 		if current_scene == SCENE_LANGUAGE_SELECT:
@@ -455,11 +566,23 @@ while True:
 				if event.key == pygame.K_LEFT:
 					current_scene = SCENE_MOTOR_READINGS
 					current_motor_reading = 1
+				elif event.key == pygame.K_RIGHT:
+					current_scene = SCENE_RECORDING_STAGE
 
 			elif event.type == pygame.JOYBUTTONDOWN:
 				if event.button == 3:  # X button
 					current_scene = SCENE_MOTOR_READINGS
 					current_motor_reading = 1
+				elif event.button == 6:  # Z button
+					current_scene = SCENE_RECORDING_STAGE
+
+		elif current_scene == SCENE_RECORDING_STAGE:
+			if event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_LEFT:
+					current_scene = SCENE_LOCK_RELEASE
+			elif event.type == pygame.JOYBUTTONDOWN:
+				if event.button == 3:  # X button
+					current_scene = SCENE_LOCK_RELEASE
 
 	# --- Scene drawing ---
 	if current_scene == SCENE_LANGUAGE_SELECT:
@@ -468,5 +591,7 @@ while True:
 		draw_motor_readings(current_motor_reading)
 	elif current_scene == SCENE_LOCK_RELEASE:
 		draw_lock_release()
+	elif current_scene == SCENE_RECORDING_STAGE:
+		draw_recording_stage()
 
 	clock.tick(30)

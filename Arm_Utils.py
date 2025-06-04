@@ -86,19 +86,6 @@ class RoboticArm:
             else:
                 logging.error(f"{self.device_name}: Failed to open port.")
                 return False
-    
-    def update_torque_status(self):
-        """Refresh torque-enabled cache for all motors."""
-        for dxl_id in self.dxl_ids:
-            torque_enabled, dxl_comm_result, dxl_error = \
-                self.packetHandler.read1ByteTxRx(
-                    self.portHandler, dxl_id,
-                    self.ADDR_PRO_TORQUE_ENABLE)
-            if dxl_comm_result == self.COMM_SUCCESS and dxl_error == 0:
-                self.torque_enabled[dxl_id] = \
-                    (torque_enabled == self.TORQUE_ENABLE)
-            else:
-                self.torque_enabled[dxl_id] = None
 
     def ping_motors(self):
         with self.lock:
@@ -118,3 +105,137 @@ class RoboticArm:
                 except Exception as e:
                     logging.error(f"{self.device_name} ID {dxl_id}: Exception during ping: {e}")
             return successful_ids
+    
+    #----Positions
+    
+    #----Torque Status Helpers
+    def update_torque_status(self):
+        """Refresh torque-enabled cache for all motors."""
+        for dxl_id in self.dxl_ids:
+            torque_enabled, dxl_comm_result, dxl_error = \
+                self.packetHandler.read1ByteTxRx(
+                    self.portHandler, dxl_id,
+                    self.ADDR_PRO_TORQUE_ENABLE)
+            if dxl_comm_result == self.COMM_SUCCESS and dxl_error == 0:
+                self.torque_enabled[dxl_id] = \
+                    (torque_enabled == self.TORQUE_ENABLE)
+            else:
+                self.torque_enabled[dxl_id] = None
+    
+    def set_is_stop(self, is_stop):
+        with self.condition:
+            self.is_stop = is_stop
+            self.condition.notify_all()
+    
+    #----Torque Functions        
+    def enable_all_motor_torque(self, enable):
+        with self.lock:
+            if not self.port_is_open:
+                logging.warning(f"{self.device_name}: Port not open.")
+                return
+            for dxl_id in self.dxl_ids:
+                self.enable_single_motor_torque(dxl_id, enable)
+    
+    def enable_single_motor_torque(self, dxl_id, enable):
+        with self.lock:
+            if self.torque_enabled.get(dxl_id) == enable:
+                return  # No state change
+            torque_status = self.TORQUE_ENABLE if enable else self.TORQUE_DISABLE
+            dxl_comm_result, dxl_error = self.packetHandler.write1ByteTxRx(
+                self.portHandler, dxl_id,
+                self.ADDR_PRO_TORQUE_ENABLE, torque_status)
+            if dxl_comm_result != self.COMM_SUCCESS:
+                logging.error(f"{self.device_name} ID {dxl_id}: "
+                              f"Torque change failed: "
+                              f"{self.packetHandler.getTxRxResult(dxl_comm_result)}")
+            elif dxl_error != 0:
+                logging.error(f"{self.device_name} ID {dxl_id}: "
+                              f"Torque change error: "
+                              f"{self.packetHandler.getRxPacketError(dxl_error)}")
+            else:
+                self.torque_enabled[dxl_id] = enable
+                status = "enabled" if enable else "disabled"
+                logging.info(f"{self.device_name} ID {dxl_id}: Torque {status}.")
+    
+    #----Recording Functions
+    def start_record(self, frequency=30, filename='NewMovement.csv', duration=None):
+        with self.lock:
+            if not self.port_is_open:
+                logging.warning(f"{self.device_name}: Port not open.")
+                return
+            interval = 1.0 / frequency
+            directory = os.path.join("Recorded_movements", self.device_name)
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+                logging.debug(f"{self.device_name}: Created directory {directory}.")
+            filepath = os.path.join(directory, filename)
+            try:
+                self.file = open(filepath, mode='w', newline='')
+                self.writer = csv.writer(self.file)
+                logging.info(f"{self.device_name}: Recording started.")
+            except PermissionError as e:
+                logging.error(f"{self.device_name}: Cannot open file: {e}")
+                return
+            self.recording = True
+            self.stop_event.clear()
+            self.interval = interval
+            self.duration = duration
+            self.record_thread = threading.Thread(target=self.update_positions_during_recording)
+            self.record_thread.start()
+            # Remove '.csv' for voice filename
+            filename = filename[:-4]
+            self.voice_thread = threading.Thread(
+                target=self.get_recommend_action_voice,
+                args=(filename, filename))
+            self.voice_thread.start()
+    
+    def update_positions_during_recording(self):
+        start_time = time.time()
+        cached_positions = []
+        try:
+            while not self.stop_event.is_set():
+                current_time = time.time()
+                next_time = current_time + self.interval
+                if self.duration is not None and (current_time - start_time) >= self.duration:
+                    break
+                positions = self.get_current_positions()
+                if positions:
+                    cached_positions.append(
+                        [positions.get(dxl_id, 0) for dxl_id in self.dxl_ids])
+                else:
+                    logging.warning(f"{self.device_name}: No positions read, skipping.")
+                sleep_time = next_time - time.time()
+                if sleep_time > 0:
+                    self.stop_event.wait(timeout=sleep_time)
+        except Exception as e:
+            logging.exception(f"{self.device_name}: Exception in update_positions: {e}")
+        finally:
+            # Flush cached data to CSV
+            if cached_positions:
+                try:
+                    if self.file is None:
+                        directory = os.path.join("Recorded_movements", self.device_name)
+                        if not os.path.exists(directory):
+                            os.makedirs(directory)
+                        filepath = os.path.join(directory, 'NewMovement.csv')
+                        self.file = open(filepath, mode='w', newline='')
+                        self.writer = csv.writer(self.file)
+                    self.writer.writerows(cached_positions)
+                    logging.info(f"{self.device_name}: Cached data written.")
+                except Exception as e:
+                    logging.error(f"{self.device_name}: Error writing cached data: {e}")
+                finally:
+                    if self.file:
+                        self.file.close()
+                        self.file = None
+                        logging.info(f"{self.device_name}: Recording finished.")
+    
+    def end_record(self):
+        self.recording = False
+        self.stop_event.set()
+        logging.info(f"{self.device_name}: Recording stopped.")
+    
+    #----Routines      
+    def emergency_stop(self):
+        self.set_is_stop(True)
+        self.enable_torque(True)
