@@ -68,14 +68,28 @@ class RoboticArm:
 				logging.info(f"{self.device_name}: Port opened successfully.")
 				if self.portHandler.setBaudRate(self.BAUDRATE):
 					logging.info(f"{self.device_name}: Baud rate set.")
+
+					successful_motors = 0  # Track how many motors responded
+
 					for dxl_id in self.dxl_ids:
 						dxl_comm_result, dxl_error = self.packetHandler.write1ByteTxRx(
 							self.portHandler, dxl_id, self.OP_MODE_ADDR,
 							self.EXTENDED_POSITION_CONTROL_MODE)
+
+						if dxl_comm_result == self.COMM_SUCCESS and dxl_error == 0:
+							successful_motors += 1
+
 						if dxl_comm_result != self.COMM_SUCCESS or dxl_error != 0:
 							logging.error(f"{self.device_name} ID {dxl_id}: "
 										  "Failed to set operating mode.")
 							continue
+
+					# Driver connected, but no motors
+					if successful_motors == 0:
+						logging.error(f"{self.device_name}: No motors responded. Closing port.")
+						self.portHandler.closePort()
+						return False
+
 					self.port_is_open = True
 					# Initialize torque-status cache
 					self.update_torque_status()
@@ -290,10 +304,13 @@ class RoboticArm:
 				logging.warning(f"{self.device_name}: Port not open.")
 				return
 			interval = 1.0 / frequency
-			directory = os.path.join("Recorded_movements", self.device_name)
+			directory = os.path.join(os.getcwd(), "Recorded_movements")
+
+			# Save to ./Recorded_movements/
 			if not os.path.exists(directory):
 				os.makedirs(directory)
 				logging.debug(f"{self.device_name}: Created directory {directory}.")
+
 			filepath = os.path.join(directory, filename)
 			try:
 				self.file = open(filepath, mode='w', newline='')
@@ -302,18 +319,13 @@ class RoboticArm:
 			except PermissionError as e:
 				logging.error(f"{self.device_name}: Cannot open file: {e}")
 				return
+
 			self.recording = True
 			self.stop_event.clear()
 			self.interval = interval
 			self.duration = duration
 			self.record_thread = threading.Thread(target=self.update_positions_during_recording)
 			self.record_thread.start()
-			# Remove '.csv' for voice filename
-			filename = filename[:-4]
-			self.voice_thread = threading.Thread(
-				target=self.get_recommend_action_voice,
-				args=(filename, filename))
-			self.voice_thread.start()
 	
 	def update_positions_during_recording(self):
 		start_time = time.time()
@@ -365,6 +377,7 @@ class RoboticArm:
 	#----Playback Functions
 	#-----------------------------------------------------------------------
 	def play_positions(self, csv_filename, frequency=30):
+
 		with self.lock:
 			if not self.port_is_open:
 				logging.warning(f"{self.device_name}: Port not open.")
@@ -375,23 +388,21 @@ class RoboticArm:
 			self.task_running = True
 			self.task_done_event.clear()
 			self.playback_thread = threading.Thread(
-				target=self.play_positions_thread,
+				target=self.play_positions_worker_thread,
 				args=(csv_filename, frequency))
 			self.playback_thread.start()
 
 	def play_positions_worker_thread(self, csv_filename, frequency):
 		try:
-			csv_filepath = os.path.join("Recorded_movements",
-										self.device_name,
-										csv_filename + ".csv")
+			csv_filepath = os.path.join(os.path.join(os.getcwd(), "Recorded_movements", csv_filename))
 			print("Playing: " + csv_filename)
 			if not os.path.exists(csv_filepath):
 				logging.error(f"{self.device_name}: File not found.")
 				return
-			# Attempt to clear errors before running
-			if not self.attempt_clear_errors():
-				logging.error(f"{self.device_name}: Persistent motor errors.")
-				return
+
+			# Enable Movement
+			self.set_is_stop(False)
+			self.enable_all_motor_torque(True)
 
 			# Reset overload timers
 			self.overload_timers = {dxl_id: 0 for dxl_id in self.dxl_ids}
