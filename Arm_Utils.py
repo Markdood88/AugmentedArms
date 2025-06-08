@@ -44,6 +44,7 @@ class RoboticArm:
 		self.condition = threading.Condition()
 		self.is_admin = is_admin
 		self.task_running = False
+		self.ping_thread_running = False
 		self.current_positions = {}
 		self.lock = threading.RLock()
 		self.task_done_event = threading.Event()
