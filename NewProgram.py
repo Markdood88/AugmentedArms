@@ -501,6 +501,33 @@ while True:
 			joystick_connected = False
 			joystick = None
 
+		# ALWAYS CHECK SAFETY LOCK AND RELEASE
+		if event.type == pygame.KEYDOWN:
+			if event.key == pygame.K_l: # L - LOCK BUTTON
+				lock_button_held = True
+				[threading.Thread(target=arm.emergency_stop, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+			elif event.key == pygame.K_r: # R - RELEASE BUTTON
+				release_button_held = True
+				[threading.Thread(target=arm.release_arm, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+		elif event.type == pygame.KEYUP:
+				if event.key == pygame.K_l:
+					lock_button_held = False
+				elif event.key == pygame.K_r:
+					release_button_held = False
+		
+		if event.type == pygame.JOYBUTTONDOWN:
+			if event.button == 8:  # L - LOCK BUTTON
+				lock_button_held = True
+				[threading.Thread(target=arm.emergency_stop, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+			elif event.button == 9:  # R - RELEASE BUTTON
+				release_button_held = True
+				[threading.Thread(target=arm.release_arm, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+		elif event.type == pygame.JOYBUTTONUP:
+				if event.button == 8:
+					lock_button_held = False
+				elif event.button == 9:
+					release_button_held = False
+
 		# Developer Language Toggle
 		if event.type == pygame.KEYDOWN and event.key == pygame.K_j:
 			if language == "en":
@@ -510,6 +537,7 @@ while True:
 
 		# --- Scene-specific input handling ---
 		if current_scene == SCENE_LANGUAGE_SELECT:
+			
 			if event.type == pygame.KEYDOWN:
 				if event.key == pygame.K_LEFT:
 					selected_lang_index = (selected_lang_index - 1) % len(languages)
@@ -530,6 +558,7 @@ while True:
 				current_scene = SCENE_MOTOR_READINGS
 
 		elif current_scene == SCENE_MOTOR_READINGS:
+			
 			if event.type == pygame.KEYDOWN:
 				if event.key == pygame.K_LEFT:
 					if current_motor_reading == 0:
@@ -555,24 +584,13 @@ while True:
 						current_scene = SCENE_LANGUAGE_SELECT
 
 		elif current_scene == SCENE_LOCK_RELEASE:
+			
 			if event.type == pygame.KEYDOWN:
 				if event.key == pygame.K_LEFT: # LEFT BUTTON
 					current_scene = SCENE_MOTOR_READINGS
 					current_motor_reading = 1
 				elif event.key == pygame.K_RIGHT: # RIGHT BUTTON
 					current_scene = SCENE_RECORDING_STAGE
-				elif event.key == pygame.K_l: # L - LOCK BUTTON
-					lock_button_held = True
-					[threading.Thread(target=arm.emergency_stop, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
-				elif event.key == pygame.K_r: # R - RELEASE BUTTON
-					release_button_held = True
-					[threading.Thread(target=arm.release_arm, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
-			
-			elif event.type == pygame.KEYUP:
-				if event.key == pygame.K_l:
-					lock_button_held = False
-				elif event.key == pygame.K_r:
-					release_button_held = False
 
 			elif event.type == pygame.JOYBUTTONDOWN:
 				if event.button == 10:  # BACK BUTTON
@@ -580,25 +598,25 @@ while True:
 					current_motor_reading = 1
 				elif event.button == 12:  # FORWARD BUTTON
 					current_scene = SCENE_RECORDING_STAGE
-				elif event.button == 8:  # L - LOCK BUTTON
-					lock_button_held = True
-					[threading.Thread(target=arm.emergency_stop, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
-				elif event.button == 9:  # R - RELEASE BUTTON
-					release_button_held = True
-					[threading.Thread(target=arm.release_arm, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
-
-			elif event.type == pygame.JOYBUTTONUP:
-				if event.button == 8:
-					lock_button_held = False
-				elif event.button == 9:
-					release_button_held = False
-
+				
 		elif current_scene == SCENE_RECORDING_STAGE:
+			
 			if event.type == pygame.KEYDOWN:
 				if event.key == pygame.K_LEFT:
 					current_scene = SCENE_LOCK_RELEASE
 				elif event.key == pygame.K_1:
 					recording_states[0] = not recording_states[0]
+					if recording_states[0] == True:
+						for arm in [a for a in (RightArm, LeftArm) if a]:
+							filename = f"Motion1{'R' if arm is RightArm else 'L'}.csv"
+							threading.Thread(
+								target=arm.start_record,
+								kwargs={'filename': filename},
+								daemon=True
+							).start()
+					elif recording_states[0] == False:
+						for arm in [a for a in (RightArm, LeftArm) if a]:
+							threading.Thread(target=arm.end_record, daemon=True).start()
 				elif event.key == pygame.K_2:
 					recording_states[1] = not recording_states[1]
 				elif event.key == pygame.K_3:
@@ -613,6 +631,13 @@ while True:
 					recording_states[1] = not recording_states[1]
 				elif event.button == 6:  # Z
 					recording_states[2] = not recording_states[2]
+				elif event.button == 0:  #Button A - Playback 1
+					for arm in [a for a in (RightArm, LeftArm) if a]:
+						threading.Thread(
+							target=arm.play_positions,
+							kwargs={'csv_filename': f"Motion1{'R' if arm == RightArm else 'L'}.csv"},
+							daemon=True
+						).start()
 
 	# --- Scene drawing ---
 	if current_scene == SCENE_LANGUAGE_SELECT:
