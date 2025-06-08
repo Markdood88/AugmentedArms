@@ -36,17 +36,30 @@ def detect_arm_ports():
 
 def ping_arm(index):
 
-	def worker():
-		global RightArm, LeftArm, right_arm_motors_alive, left_arm_motors_alive
-		
-		if index == 0: #Right Arm 1-9
-			successful_ids = RightArm.ping_motors()
-			right_arm_motors_alive = match_lists(right_arm_expected_motors, successful_ids)
-		if index == 1:  #Left Arm 11-18
-			successful_ids = LeftArm.ping_motors()
-			left_arm_motors_alive = match_lists(left_arm_expected_motors, successful_ids)
+	global RightArm, LeftArm
+	global right_arm_motors_alive, left_arm_motors_alive
 
-	threading.Thread(target=worker, daemon=True).start()
+	def worker(arm, expected_ids, update_alive):
+		if arm.ping_thread_running:
+			return
+		arm.ping_thread_running = True
+		successful_ids = arm.ping_motors()
+		update_alive(match_lists(expected_ids, successful_ids))
+		arm.ping_thread_running = False
+		
+	if index == 0 and RightArm: # Motors 1-9
+		threading.Thread(
+			target=worker,
+			args=(RightArm, right_arm_expected_motors, lambda v: globals().__setitem__('right_arm_motors_alive', v)),
+			daemon=True
+		).start()
+
+	elif index == 1 and LeftArm: # Motors 11-18
+		threading.Thread(
+			target=worker,
+			args=(LeftArm, left_arm_expected_motors, lambda v: globals().__setitem__('left_arm_motors_alive', v)),
+			daemon=True
+		).start()
 
 def draw_language_selection():
 	render_surface.fill(black)
@@ -77,7 +90,7 @@ def draw_language_selection():
 		render_surface.blit(lang_surface, lang_rect)
 
 	# Confirm text
-	confirm_text = "Press Z to confirm / 決定するにはZを押してください"
+	confirm_text = "Press ♥ to confirm / 決定するには♥を押してください"
 	confirm_surface = smallfont.render(confirm_text, True, white)
 	confirm_rect = confirm_surface.get_rect(center=(render_surface.get_width() // 2, render_surface.get_height() - 80))
 	render_surface.blit(confirm_surface, confirm_rect)
@@ -120,12 +133,12 @@ def draw_motor_readings(index):
 			"Re-plug the arms correctly, and restart."
 		)
 		notice = (
-			"You should see 9 white circles\n"
+			f"You should see {9-index} white circles\n"
 			"on the right side of the screen.\n"
 			"If you see solid Red X, please\n"
 			"let the support team know."
 		)
-		controls = "Z: NEXT\nX: BACK"
+		controls = "♥: NEXT\n–: BACK"
 	else:
 		status_text = f"{motor_readings_jp[index]}のポート: {port}"
 		instructions = (
@@ -135,11 +148,11 @@ def draw_motor_readings(index):
 		)
 		notice = (
 			"画面右側に白い円が\n"
-			"9個表示されているはずです。\n"
+			f"{9-index}個表示されているはずです。\n"
 			"赤いXが表示されている場合は、\n"
 			"サポートチームにご連絡ください。"
 		)
-		controls = "Z: 次へ\nX: 戻る"
+		controls = "♥: 次へ\n–: 戻る"
 
 	# Draw status line
 	status_surf = status_font.render(status_text, True, white)
@@ -209,6 +222,8 @@ def draw_motor_readings(index):
 	pygame.display.flip()
 
 def draw_lock_release():
+
+	global lock_button_held, release_button_held
 	render_surface.fill(black)
 
 	# Fonts
@@ -221,14 +236,14 @@ def draw_lock_release():
 	# Text by language
 	if language == "en":
 		message = "Please test both\nLock and Release"
-		controls = "Z: NEXT\nX: BACK"
+		controls = "♥: NEXT\n–: BACK"
 		lock_text = "LOCK"
 		release_text = "RELEASE"
 		warning_text = "In case of failure, please contact support"
 	
 	else:
 		message = "ロックと解除を\nテストしてください"
-		controls = "Z: 次へ\nX: 戻る"
+		controls = "♥: 次へ\n–: 戻る"
 		lock_text = "ロック"
 		release_text = "解除"
 		warning_text = "不具合時はサポートへ連絡ください"
@@ -249,23 +264,9 @@ def draw_lock_release():
 		y = controls_y + i * (controls_font.get_height() + 5)
 		render_surface.blit(line_surf, (controls_x, y))
 
-	# Safe button check
-	l_held = False
-	r_held = False
-	if joystick_connected and joystick:
-		try:
-			l_held = joystick.get_button(8) == 1
-			r_held = joystick.get_button(9) == 1
-		except pygame.error:
-			l_held = False
-			r_held = False
-   
-   	# Keyboard input
-	keys = pygame.key.get_pressed()
-	if keys[pygame.K_l]:
-		l_held = True
-	if keys[pygame.K_r]:
-		r_held = True
+	# Lock Release Variable Check
+	l_held = lock_button_held
+	r_held = release_button_held
 
 	# Colors depending on button state
 	lock_pill_color = green if l_held else red  # green if held else red
@@ -333,18 +334,6 @@ def draw_recording_stage():
 	status_font = pygame.font.Font(font_path, 25)
 	letter_font = pygame.font.Font(font_path, 36)
  
-   	# Keyboard input
-	keys = pygame.key.get_pressed()
-	if keys[pygame.K_1]:
-		recording_states[0] = not recording_states[0]
-		pygame.time.wait(200)
-	if keys[pygame.K_2]:
-		recording_states[1] = not recording_states[1]
-		pygame.time.wait(200)
-	if keys[pygame.K_3]:
-		recording_states[2] = not recording_states[2]
-		pygame.time.wait(200)
-
 	# Text by language
 	if language == "en":
 		title_text = "Record Today's Animations"
@@ -387,7 +376,7 @@ def draw_recording_stage():
 
 		# Circle with letter A/B/C and color Green/Blue/Yellow
 		circle_y = base_y + 150
-		colors = [mint_green, yellow, dark_blue]
+		colors = [darK_green, yellow, dark_blue]
 		letters = ["A", "B", "C"]
 		pygame.draw.circle(render_surface, colors[i], (section_x, circle_y), 25)
 		letter_surf = letter_font.render(letters[i], True, black)
@@ -405,7 +394,7 @@ def draw_recording_stage():
 #----VARIABLES
 
 # Developer Mode
-DEVELOPER_MODE = True
+DEVELOPER_MODE = False
 
 # Scene Vars
 SCENE_LANGUAGE_SELECT = "language_select"
@@ -437,6 +426,10 @@ left_arm_expected_motors = [11,12,13,14,15,16,17,18] #8 Motors
 right_arm_motors_alive = [0,0,0,0,0,0,0,0,0] #9 Values
 left_arm_motors_alive = [0,0,0,0,0,0,0,0] #8 Values
 
+# Arm Status Vars
+lock_button_held = False
+release_button_held = False
+
 # Joystick Setup
 joystick = None
 joystick_connected = False
@@ -454,7 +447,8 @@ black = (0,0,0)
 light_green = (82,255,128)
 green = (0,200,0)
 mint_green = (62,173,112)
-yellow = (252,243,71)
+darK_green = (1,133,52)
+yellow = (245,207,95)
 
 #Recording States
 recording_states = [False, False, False]
@@ -464,10 +458,9 @@ recording_states = [False, False, False]
 # Initialize Arms and packetHandlers
 if not DEVELOPER_MODE:
 	RIGHTARM_PORT_NAME, LEFTARM_PORT_NAME = detect_arm_ports()
-	RightArm = Arm_Utils.RoboticArm(RIGHTARM_PORT_NAME, [1,2,3,4,5,6,7,8,9]) #9 Motors
-	LeftArm = Arm_Utils.RoboticArm(LEFTARM_PORT_NAME, [11,12,13,14,15,16,17,18]) #8 Motors
-	RightArm.open_port()
-	LeftArm.open_port()
+	# Right Arm has 9 Motors, Left has 8 Motors. Create and Test in one line below
+	RightArm = arm if (arm := Arm_Utils.RoboticArm(RIGHTARM_PORT_NAME, [1,2,3,4,5,6,7,8,9])).open_port() else None
+	LeftArm = arm if (arm := Arm_Utils.RoboticArm(LEFTARM_PORT_NAME, [11,12,13,14,15,16,17,18])).open_port() else None
 
 # Initialize Pygame
 pygame.init()
@@ -509,7 +502,7 @@ while True:
 			joystick = None
 
 		# Developer Language Toggle
-		if DEVELOPER_MODE and event.type == pygame.KEYDOWN and event.key == pygame.K_j:
+		if event.type == pygame.KEYDOWN and event.key == pygame.K_j:
 			if language == "en":
 				language = "jp"
 			else:
@@ -532,7 +525,7 @@ while True:
 				elif event.value > AXIS_THRESHOLD:
 					selected_lang_index = (selected_lang_index + 1) % len(languages)
 
-			elif event.type == pygame.JOYBUTTONDOWN and event.button == 6:  # Z button
+			elif event.type == pygame.JOYBUTTONDOWN and event.button == 12:  # FORWARD BUTTON
 				language = "en" if selected_lang_index == 0 else "jp"
 				current_scene = SCENE_MOTOR_READINGS
 
@@ -550,12 +543,12 @@ while True:
 						current_scene = SCENE_LOCK_RELEASE  # Go to lock release
 
 			elif event.type == pygame.JOYBUTTONDOWN:
-				if event.button == 6:  # Z button
+				if event.button == 12:  # FORWARD BUTTON
 					if current_motor_reading == 0:
 						current_motor_reading = 1
 					elif current_motor_reading == 1:
 						current_scene = SCENE_LOCK_RELEASE
-				elif event.button == 3:  # X button
+				elif event.button == 10:  # BACK BUTTON
 					if current_motor_reading == 1:
 						current_motor_reading = 0
 					elif current_motor_reading == 0:
@@ -563,26 +556,63 @@ while True:
 
 		elif current_scene == SCENE_LOCK_RELEASE:
 			if event.type == pygame.KEYDOWN:
-				if event.key == pygame.K_LEFT:
+				if event.key == pygame.K_LEFT: # LEFT BUTTON
 					current_scene = SCENE_MOTOR_READINGS
 					current_motor_reading = 1
-				elif event.key == pygame.K_RIGHT:
+				elif event.key == pygame.K_RIGHT: # RIGHT BUTTON
 					current_scene = SCENE_RECORDING_STAGE
+				elif event.key == pygame.K_l: # L - LOCK BUTTON
+					lock_button_held = True
+					[threading.Thread(target=arm.emergency_stop, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+				elif event.key == pygame.K_r: # R - RELEASE BUTTON
+					release_button_held = True
+					[threading.Thread(target=arm.release_arm, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+			
+			elif event.type == pygame.KEYUP:
+				if event.key == pygame.K_l:
+					lock_button_held = False
+				elif event.key == pygame.K_r:
+					release_button_held = False
 
 			elif event.type == pygame.JOYBUTTONDOWN:
-				if event.button == 3:  # X button
+				if event.button == 10:  # BACK BUTTON
 					current_scene = SCENE_MOTOR_READINGS
 					current_motor_reading = 1
-				elif event.button == 6:  # Z button
+				elif event.button == 12:  # FORWARD BUTTON
 					current_scene = SCENE_RECORDING_STAGE
+				elif event.button == 8:  # L - LOCK BUTTON
+					lock_button_held = True
+					[threading.Thread(target=arm.emergency_stop, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+				elif event.button == 9:  # R - RELEASE BUTTON
+					release_button_held = True
+					[threading.Thread(target=arm.release_arm, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+
+			elif event.type == pygame.JOYBUTTONUP:
+				if event.button == 8:
+					lock_button_held = False
+				elif event.button == 9:
+					release_button_held = False
 
 		elif current_scene == SCENE_RECORDING_STAGE:
 			if event.type == pygame.KEYDOWN:
 				if event.key == pygame.K_LEFT:
 					current_scene = SCENE_LOCK_RELEASE
+				elif event.key == pygame.K_1:
+					recording_states[0] = not recording_states[0]
+				elif event.key == pygame.K_2:
+					recording_states[1] = not recording_states[1]
+				elif event.key == pygame.K_3:
+					recording_states[2] = not recording_states[2]
+
 			elif event.type == pygame.JOYBUTTONDOWN:
-				if event.button == 3:  # X button
+				if event.button == 10:  # BACK BUTTON
 					current_scene = SCENE_LOCK_RELEASE
+				elif event.button == 3:  # X
+					recording_states[0] = not recording_states[0]
+				elif event.button == 4:  # Y
+					recording_states[1] = not recording_states[1]
+				elif event.button == 6:  # Z
+					recording_states[2] = not recording_states[2]
 
 	# --- Scene drawing ---
 	if current_scene == SCENE_LANGUAGE_SELECT:
