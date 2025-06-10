@@ -524,7 +524,7 @@ SCENE_MOTOR_READINGS = "motor_readings"
 SCENE_LOCK_RELEASE = "lock_release"
 SCENE_RECORDING_STAGE = "recording_stage"
 SCENE_LIVE_MODE = "live_mode"
-current_scene = SCENE_LIVE_MODE
+current_scene = SCENE_LANGUAGE_SELECT
 
 # Language Vars
 language = "en"
