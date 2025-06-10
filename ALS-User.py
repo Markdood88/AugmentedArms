@@ -4,6 +4,7 @@ import random
 import math
 import threading
 import Arm_Utils
+import ALS_Utils
 from dynamixel_sdk import *
 
 def match_lists(expected, actual):
@@ -524,7 +525,7 @@ SCENE_MOTOR_READINGS = "motor_readings"
 SCENE_LOCK_RELEASE = "lock_release"
 SCENE_RECORDING_STAGE = "recording_stage"
 SCENE_LIVE_MODE = "live_mode"
-current_scene = SCENE_LANGUAGE_SELECT
+current_scene = SCENE_LIVE_MODE
 
 # Language Vars
 language = "en"
@@ -609,10 +610,18 @@ controller_disconnected_icon = pygame.image.load("/home/b2j/Desktop/AugmentedArm
 controller_disconnected_icon_scaled = pygame.transform.scale(controller_disconnected_icon, (45, 45))
 controller_icon_pos = (10, render_surface.get_height() - 55)
 
+#Piezo and Speaker for ALS
+finger_sensor = ALS_Utils.PiezoSensor(pin = 21)
+speaker = ALS_Utils.Speaker(volume=1.0)
+volume = 1.0
+
 # ---- MAIN LOOP ----
 while True:
 	for event in pygame.event.get():
-		# Always allow quitting
+		
+		#-------------------------------
+		#----Global Events
+		#-------------------------------
 		if event.type == pygame.QUIT:
 			pygame.quit()
 			sys.exit()
@@ -661,7 +670,9 @@ while True:
 			else:
 				language = "en"
 
-		# --- Scene-specific input handling ---
+		#-------------------------------
+		#----Scene-specific input handling
+		#-------------------------------
 		if current_scene == SCENE_LANGUAGE_SELECT:
 			
 			if event.type == pygame.KEYDOWN:
@@ -929,6 +940,20 @@ while True:
 					playback_button_states[1] = False
 				elif event.button == 7: #Button A
 					playback_button_states[2] = False
+
+	# --- ALS User Polled Inputs ---
+	if finger_sensor.was_pressed():
+		if current_scene == SCENE_LIVE_MODE:
+			if speaker.playing:
+				speaker.play_overlap("/home/b2j/Desktop/AugmentedArms/Sounds/Click.mp3", volume=1.0)
+			else:
+				sequence = [
+					"/home/b2j/Desktop/AugmentedArms/Sounds/Click.mp3",
+					"/home/b2j/Desktop/AugmentedArms/Sounds/Option1-short.wav",
+					"/home/b2j/Desktop/AugmentedArms/Sounds/Option2-short.wav",
+					"/home/b2j/Desktop/AugmentedArms/Sounds/Option3-short.wav"
+				]
+				speaker.play_sequence(sequence, volume=volume)
 
 	# --- Scene drawing ---
 	if current_scene == SCENE_LANGUAGE_SELECT:
