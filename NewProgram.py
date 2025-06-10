@@ -403,7 +403,117 @@ def draw_recording_stage():
 	pygame.draw.rect(screen, cool_blue, render_surface.get_rect(topleft=(0, 0)), 1)
 	pygame.display.flip()
 
-#----VARIABLES
+def draw_live_mode():
+	global lock_button_held, release_button_held, playback_button_states
+	render_surface.fill(black)
+
+	# Fonts
+	font_path = "/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf"
+	title_font = pygame.font.Font(font_path, 30)
+	letter_font = pygame.font.Font(font_path, 36)
+	hint_font = pygame.font.Font(font_path, 20)
+	button_font = pygame.font.Font(font_path, 40)
+	label_font = pygame.font.Font(font_path, 22)
+
+	# Watermark background: "LIVE\nMODE"
+	watermark_font = pygame.font.Font(font_path, 150)  # Large font size
+	watermark_color = (40, 40, 40)  # Very low brightness gray
+
+	live_surf = watermark_font.render("LIVE", True, watermark_color)
+	mode_surf = watermark_font.render("MODE", True, watermark_color)
+
+	live_rect = live_surf.get_rect(center=(render_surface.get_width() // 2, render_surface.get_height() // 2 - 90))
+	mode_rect = mode_surf.get_rect(center=(render_surface.get_width() // 2, render_surface.get_height() // 2 + 70))
+
+	render_surface.blit(live_surf, live_rect)
+	render_surface.blit(mode_surf, mode_rect)
+
+	# Text by language
+	if language == "en":
+		lock_text = "LOCK"
+		release_text = "RELEASE"
+		playback_labels = ["Playback 1", "Playback 2", "Playback 3"]
+		hint_text = "–: BACK"
+	else:
+		lock_text = "ロック"
+		release_text = "解除"
+		playback_labels = ["再生 1", "再生 2", "再生 3"]
+		hint_text = "–: 戻る"
+	
+	# Lock and Release Pills
+	l_held = lock_button_held
+	r_held = release_button_held
+	lock_color = green if l_held else red
+	release_color = green if r_held else red
+	lock_text_color = light_green if l_held else white
+	release_text_color = light_green if r_held else white
+
+	screen_width = render_surface.get_width()
+	spacing = 100
+	center_x = screen_width // 2
+	mid_y = 90
+	shift_amount = 60 if language == "en" else 50
+	lock_x = (center_x - spacing) - shift_amount
+	release_x = (center_x + spacing) - shift_amount
+	capsule_width, capsule_height = 100, 50
+
+	def draw_pill(surface, x, y, w, h, color, text):
+		radius = h // 2
+		pygame.draw.circle(surface, color, (x + radius, y + radius), radius)
+		pygame.draw.circle(surface, color, (x + w - radius, y + radius), radius)
+		pygame.draw.rect(surface, color, (x + radius, y, w - 2*radius, h))
+		text_surf = button_font.render(text, True, white)
+		text_rect = text_surf.get_rect(center=(x + w//2, y + h//2 - 2))
+		surface.blit(text_surf, text_rect)
+
+	# Lock/Release Labels
+	lock_label = button_font.render(lock_text, True, lock_text_color)
+	release_label = button_font.render(release_text, True, release_text_color)
+	render_surface.blit(lock_label, (lock_x - lock_label.get_width()//2 + capsule_width//2, 25))
+	render_surface.blit(release_label, (release_x - release_label.get_width()//2 + capsule_width//2, 25))
+
+	# Pills
+	draw_pill(render_surface, lock_x, mid_y, capsule_width, capsule_height, lock_color, "L")
+	draw_pill(render_surface, release_x, mid_y, capsule_width, capsule_height, release_color, "R")
+
+	# Playback buttons A/B/C
+	section_spacing = 140
+	base_y = 170
+	circle_y = base_y + 60
+	letters = ["A", "B", "C"]
+	pressed_colors = [mint_green, light_yellow, light_blue]
+	unpressed_colors = [dark_green, dark_yellow, dark_blue]
+	playback_colors = [t if b else f for b, t, f in zip(playback_button_states, pressed_colors, unpressed_colors)]
+
+	for i in range(3):
+		x = center_x + (i - 1) * section_spacing
+
+		# Playback labels above buttons
+		label_surf = label_font.render(playback_labels[i], True, white)
+		label_rect = label_surf.get_rect(center=(x, base_y))
+		render_surface.blit(label_surf, label_rect)
+
+		# Circle button with A/B/C
+		pygame.draw.circle(render_surface, playback_colors[i], (x, circle_y), 25)
+		letter_surf = letter_font.render(letters[i], True, black)
+		letter_rect = letter_surf.get_rect(center=(x, circle_y - 2))
+		render_surface.blit(letter_surf, letter_rect)
+
+	# Bottom hint
+	hint_surf = hint_font.render(hint_text, True, white)
+	hint_rect = hint_surf.get_rect(center=(render_surface.get_width() // 2, render_surface.get_height() - 30))
+	render_surface.blit(hint_surf, hint_rect)
+
+	# Final display
+	screen.blit(render_surface, (0, 0))
+	if not joystick_connected:
+		screen.blit(controller_disconnected_icon_scaled, controller_icon_pos)
+	pygame.draw.rect(screen, cool_blue, render_surface.get_rect(topleft=(0, 0)), 1)
+	pygame.display.flip()
+
+#--------------------------------------------------------------------
+#----Main Code
+#--------------------------------------------------------------------
 
 # Developer Mode
 DEVELOPER_MODE = False
@@ -413,7 +523,8 @@ SCENE_LANGUAGE_SELECT = "language_select"
 SCENE_MOTOR_READINGS = "motor_readings"
 SCENE_LOCK_RELEASE = "lock_release"
 SCENE_RECORDING_STAGE = "recording_stage"
-current_scene = SCENE_RECORDING_STAGE
+SCENE_LIVE_MODE = "live_mode"
+current_scene = SCENE_LIVE_MODE
 
 # Language Vars
 language = "en"
@@ -619,6 +730,8 @@ while True:
 			if event.type == pygame.KEYDOWN:
 				if event.key == pygame.K_LEFT:
 					current_scene = SCENE_LOCK_RELEASE
+				elif event.key == pygame.K_RIGHT:
+					current_scene = SCENE_LIVE_MODE
 				elif event.key == pygame.K_1:
 					recording_states[0] = not recording_states[0]
 					if recording_states[0] == True:
@@ -662,6 +775,8 @@ while True:
 			elif event.type == pygame.JOYBUTTONDOWN:
 				if event.button == 10:  # BACK BUTTON
 					current_scene = SCENE_LOCK_RELEASE
+				elif event.button == 12: # FORWARD BUTTON
+					current_scene = SCENE_LIVE_MODE
 				elif event.button == 3:  # X
 					recording_states[0] = not recording_states[0]
 					if recording_states[0] == True:
@@ -734,6 +849,87 @@ while True:
 				elif event.button == 7: #Button A
 					playback_button_states[2] = False
 
+		elif current_scene == SCENE_LIVE_MODE:
+
+			if event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_LEFT:
+					current_scene = SCENE_RECORDING_STAGE
+				elif event.key == pygame.K_1:
+					recording_states[0] = not recording_states[0]
+					if recording_states[0] == True:
+						for arm in [a for a in (RightArm, LeftArm) if a]:
+							filename = f"Motion1{'R' if arm is RightArm else 'L'}.csv"
+							threading.Thread(
+								target=arm.start_record,
+								kwargs={'filename': filename},
+								daemon=True
+							).start()
+					elif recording_states[0] == False:
+						for arm in [a for a in (RightArm, LeftArm) if a]:
+							threading.Thread(target=arm.end_record, daemon=True).start()
+				elif event.key == pygame.K_2:
+					recording_states[1] = not recording_states[1]
+					if recording_states[1] == True:
+						for arm in [a for a in (RightArm, LeftArm) if a]:
+							filename = f"Motion2{'R' if arm is RightArm else 'L'}.csv"
+							threading.Thread(
+								target=arm.start_record,
+								kwargs={'filename': filename},
+								daemon=True
+							).start()
+					elif recording_states[1] == False:
+						for arm in [a for a in (RightArm, LeftArm) if a]:
+							threading.Thread(target=arm.end_record, daemon=True).start()
+				elif event.key == pygame.K_3:
+					recording_states[2] = not recording_states[2]
+					if recording_states[2] == True:
+						for arm in [a for a in (RightArm, LeftArm) if a]:
+							filename = f"Motion3{'R' if arm is RightArm else 'L'}.csv"
+							threading.Thread(
+								target=arm.start_record,
+								kwargs={'filename': filename},
+								daemon=True
+							).start()
+					elif recording_states[2] == False:
+						for arm in [a for a in (RightArm, LeftArm) if a]:
+							threading.Thread(target=arm.end_record, daemon=True).start()
+
+			elif event.type == pygame.JOYBUTTONDOWN:
+				if event.button == 10:  # BACK BUTTON
+					current_scene = SCENE_RECORDING_STAGE
+				elif event.button == 0:  #Button A - Playback 1
+					playback_button_states[0] = True
+					for arm in [a for a in (RightArm, LeftArm) if a]:
+						threading.Thread(
+							target=arm.play_positions,
+							kwargs={'csv_filename': f"Motion1{'R' if arm == RightArm else 'L'}.csv"},
+							daemon=True
+						).start()
+				elif event.button == 1:  #Button B - Playback 2
+					playback_button_states[1] = True
+					for arm in [a for a in (RightArm, LeftArm) if a]:
+						threading.Thread(
+							target=arm.play_positions,
+							kwargs={'csv_filename': f"Motion2{'R' if arm == RightArm else 'L'}.csv"},
+							daemon=True
+						).start()
+				elif event.button == 7:  #Button C - Playback 3
+					playback_button_states[2] = True
+					for arm in [a for a in (RightArm, LeftArm) if a]:
+						threading.Thread(
+							target=arm.play_positions,
+							kwargs={'csv_filename': f"Motion3{'R' if arm == RightArm else 'L'}.csv"},
+							daemon=True
+						).start()
+
+			elif event.type == pygame.JOYBUTTONUP:
+				if event.button == 0: #Button A
+					playback_button_states[0] = False
+				elif event.button == 1: #Button B
+					playback_button_states[1] = False
+				elif event.button == 7: #Button A
+					playback_button_states[2] = False
+
 	# --- Scene drawing ---
 	if current_scene == SCENE_LANGUAGE_SELECT:
 		draw_language_selection()
@@ -743,5 +939,7 @@ while True:
 		draw_lock_release()
 	elif current_scene == SCENE_RECORDING_STAGE:
 		draw_recording_stage()
+	elif current_scene == SCENE_LIVE_MODE:
+		draw_live_mode()
 
 	clock.tick(30)
