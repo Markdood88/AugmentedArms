@@ -525,7 +525,7 @@ SCENE_MOTOR_READINGS = "motor_readings"
 SCENE_LOCK_RELEASE = "lock_release"
 SCENE_RECORDING_STAGE = "recording_stage"
 SCENE_LIVE_MODE = "live_mode"
-current_scene = SCENE_LIVE_MODE
+current_scene = SCENE_LANGUAGE_SELECT
 
 # Language Vars
 language = "en"
@@ -944,8 +944,53 @@ while True:
 	# --- ALS User Polled Inputs ---
 	if finger_sensor.was_pressed():
 		if current_scene == SCENE_LIVE_MODE:
+			
 			if speaker.playing:
 				speaker.play_overlap("/home/b2j/Desktop/AugmentedArms/Sounds/Click.mp3", volume=1.0)
+				speaker.trigger_record_index()
+				speaker.stop()
+
+				if(speaker.trigger_index): #Valid Audio Trigger
+					if speaker.trigger_index == 1: # Trigger Playback 1
+						
+						#Highlight Appropriate button for current playback
+						playback_button_states[0] = True
+						playback_button_states[1] = False
+						playback_button_states[2] = False
+
+						for arm in [a for a in (RightArm, LeftArm) if a]:
+							threading.Thread(
+								target=arm.play_positions,
+								kwargs={'csv_filename': f"Motion1{'R' if arm == RightArm else 'L'}.csv"},
+								daemon=True
+							).start()
+					elif speaker.trigger_index == 2: # Trigger Playback 2
+						
+						#Highlight Appropriate button for current playback
+						playback_button_states[0] = False
+						playback_button_states[1] = True
+						playback_button_states[2] = False
+
+						for arm in [a for a in (RightArm, LeftArm) if a]:
+							threading.Thread(
+								target=arm.play_positions,
+								kwargs={'csv_filename': f"Motion2{'R' if arm == RightArm else 'L'}.csv"},
+								daemon=True
+							).start()
+					elif speaker.trigger_index == 3: # Trigger Playback 3
+						
+						#Highlight Appropriate button for current playback
+						playback_button_states[0] = False
+						playback_button_states[1] = False
+						playback_button_states[2] = True
+
+						for arm in [a for a in (RightArm, LeftArm) if a]:
+							threading.Thread(
+								target=arm.play_positions,
+								kwargs={'csv_filename': f"Motion3{'R' if arm == RightArm else 'L'}.csv"},
+								daemon=True
+							).start()
+					
 			else:
 				sequence = [
 					"/home/b2j/Desktop/AugmentedArms/Sounds/Click.mp3",
