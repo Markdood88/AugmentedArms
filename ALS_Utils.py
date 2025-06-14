@@ -43,6 +43,8 @@ class Speaker:
 		self.volume = volume  # volume float 0.0 to 1.0
 		self._thread = threading.Thread(target=self._update_loop, daemon=True)
 		self._thread.start()
+		self.current_playing_audio = -1
+		self.trigger_index = None
 
 	def play_single(self, filename, volume=None):
 		with self._lock:
@@ -65,7 +67,9 @@ class Speaker:
 		with self._lock:
 			if not self.playing:
 				self.queue = list(filenames)
-				self._play_next(volume)
+				self.current_playing_audio = -1
+				self.trigger_index = None
+				self._play_next(volume) 
 
 	def _play_next(self, volume=None):
 		if self.queue:
@@ -74,6 +78,7 @@ class Speaker:
 			sound.set_volume(volume if volume is not None else self.volume)
 			self.channel.play(sound)
 			self.playing = True
+			self.current_playing_audio += 1
 		else:
 			self.playing = False
 
@@ -83,6 +88,11 @@ class Speaker:
 				if self.playing and not self.channel.get_busy():
 					self._play_next()
 			time.sleep(0.05)
+
+	def trigger_record_index(self):
+		with self._lock:
+			if self.playing and self.channel.get_busy():
+				self.trigger_index = self.current_playing_audio
 
 	def stop(self):
 		with self._lock:
