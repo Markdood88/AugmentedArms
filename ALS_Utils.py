@@ -10,22 +10,22 @@ GPIO.setwarnings(False)
 class PiezoSensor:
 	def __init__(self, pin, cooldown=0.2):
 		self.pin = pin
-		GPIO.setup(self.pin, GPIO.IN)
+		GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 		self.prev_state = GPIO.LOW
 		self.last_press_time = 0
 		self.cooldown = cooldown  # in seconds
 
 	def is_pressed(self):
 		"""Returns True if currently pressed"""
-		return GPIO.input(self.pin) == GPIO.HIGH
+		return GPIO.input(self.pin) == GPIO.LOW
 
 	def was_pressed(self):
 		"""Returns True only once when state changes from LOW to HIGH and cooldown passed"""
 		current = GPIO.input(self.pin)
 		now = time.time()
 		pressed = (
-			current == GPIO.HIGH and
-			self.prev_state == GPIO.LOW and
+			current == GPIO.LOW and
+			self.prev_state == GPIO.HIGH and
 			(now - self.last_press_time) >= self.cooldown
 		)
 		self.prev_state = current
