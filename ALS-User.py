@@ -994,9 +994,9 @@ while True:
 			else:
 				sequence = [
 					"/home/b2j/Desktop/AugmentedArms/Sounds/Click.mp3",
-					"/home/b2j/Desktop/AugmentedArms/Sounds/Option1-short.wav",
-					"/home/b2j/Desktop/AugmentedArms/Sounds/Option2-short.wav",
-					"/home/b2j/Desktop/AugmentedArms/Sounds/Option3-short.wav"
+					"/home/b2j/Desktop/AugmentedArms/Sounds/Option1-long.wav",
+					"/home/b2j/Desktop/AugmentedArms/Sounds/Option2-long.wav",
+					"/home/b2j/Desktop/AugmentedArms/Sounds/Option3-long.wav"
 				]
 				speaker.play_sequence(sequence, volume=volume)
 
