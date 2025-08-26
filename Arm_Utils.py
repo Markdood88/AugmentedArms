@@ -12,7 +12,7 @@ class RoboticArm:
 	TORQUE_ENABLE = 1
 	TORQUE_DISABLE = 0
 	PROTOCOL_VERSION = 2.0
-	BAUDRATE = 115200
+	BAUDRATE = 1000000
 	ADDR_PRO_TORQUE_ENABLE = 64
 	ADDR_PRO_PRESENT_POSITION = 132
 	ADDR_PRO_PRESENT_POSITION_LEN = 4
@@ -32,7 +32,11 @@ class RoboticArm:
 	COMM_SUCCESS = 0
 	COMM_TX_FAIL = -1001
 	COMM_RX_TIMEOUT = -1000
-	
+
+	#SPLINE ARMS
+	LIGHT_FINGER_DXL_ID = 10
+	ADDR_INDIRECT_DATA1 = 224
+
 	def __init__(self, device_name, dxl_ids, is_admin=False):
 		self.device_name = device_name
 		self.dxl_ids = dxl_ids
@@ -387,6 +391,11 @@ class RoboticArm:
 				return
 			self.task_running = True
 			self.task_done_event.clear()
+
+			#If right arm, turn light on
+			if (self.device_name == '/dev/ttyUSB1'):
+				self.right_arm_light(state=True)
+
 			self.playback_thread = threading.Thread(
 				target=self.play_positions_worker_thread,
 				args=(csv_filename, frequency))
@@ -455,9 +464,28 @@ class RoboticArm:
 		except Exception as e:
 			logging.exception(f"{self.device_name}: Exception in play_positions_thread: {e}")
 		finally:
+				
+			#If right arm, turn light off
+			if (self.device_name == '/dev/ttyUSB1'):
+				self.right_arm_light(state=False)
+
 			self.task_running = False
 			self.task_done_event.set()
 
+	def right_arm_light(self, state: bool):
+		
+		# Write 0xFF (255) to Indirect Data 1
+		value = 0x00
+		if state==True:
+			value = 0xFF
+
+		dxl_comm_result, dxl_error = self.packetHandler.write1ByteTxRx(
+			self.portHandler, self.LIGHT_FINGER_DXL_ID, self.ADDR_INDIRECT_DATA1, value
+		)
+
+		if dxl_error != 0:
+			print(self.packetHandler.getRxPacketError(dxl_error))
+		
 	#-----------------------------------------------------------------------
 	#----File utilities
 	#-----------------------------------------------------------------------
