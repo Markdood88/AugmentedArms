@@ -1,8 +1,12 @@
+import os
 import pygame
 import sys
 import socket
 import time
 import math
+
+#Audio BMI Code by MIKITO OGINO
+import ABMI_Utils
 
 # Font Path
 notoFont = "/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf"
@@ -24,17 +28,16 @@ mint_green = (54,217,62)
 dark_green = (2,140,0)
 dark_yellow = (201,185,0)
 
-def draw_text_wrapped(surface, text, font, color, x, y, max_width, line_spacing=5):
-	"""
-	Draws multi-line text (handles '\n' or wraps long lines) on the given surface.
-	Returns the total height used.
-	"""
+def draw_text_wrapped(surface, text, font, color, x, y, max_width, line_spacing=5, lang="en"):
 	lines = []
 	for paragraph in text.split("\n"):
-		words = paragraph.split(" ")
+		if lang == "jp":
+			words = list(paragraph)  # treat each character as a word
+		else:
+			words = paragraph.split(" ")
 		current_line = ""
 		for word in words:
-			test_line = current_line + (" " if current_line else "") + word
+			test_line = current_line + word if lang == "jp" else current_line + (" " if current_line else "") + word
 			if font.size(test_line)[0] <= max_width:
 				current_line = test_line
 			else:
@@ -109,7 +112,7 @@ class WiFiCheckScene(Scene):
 	def handle_events(self, event):
 		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
 			if self.status == "success":
-				self.app.quit()  # or switch to next scene
+				self.app.switch_scene("bci_connect")  # go to bci_connect
 
 	def check_internet(self, host="8.8.8.8", port=53, timeout=2):
 		try:
@@ -152,7 +155,7 @@ class WiFiCheckScene(Scene):
 
 		# Draw English and Japanese text
 		draw_text_wrapped(surface, msg_en, self.font_en, black, x=40, y=80, max_width=400)
-		draw_text_wrapped(surface, msg_jp, self.font_jp, black, x=40, y=180, max_width=400)
+		draw_text_wrapped(surface, msg_jp, self.font_jp, black, x=40, y=180, max_width=400, lang="jp")
   
 		# Draw spinner if checking or retrying
 		if self.status in ["checking", "fail"]:
@@ -163,18 +166,141 @@ class WiFiCheckScene(Scene):
 				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
 				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
 				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
-  
+
+# --- BCI Connection Check Scene ---
+class BCIConnectScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.font_en = pygame.font.Font(notoFont, 22)
+		self.font_jp = pygame.font.Font(notoFont, 22)
+		self.status = "checking"  # "checking", "connected", "wait_cables"
+		self.last_check_time = 0
+		self.retry_interval = 3  # seconds between retries
+
+		# Spinner setup
+		self.spinner_angle = 0
+		self.spinner_radius = 20
+		self.spinner_center = (440, 280)  # bottom-right like WiFi spinner
+		self.spinner_speed = -2  # degrees per frame
+
+		# Timer for showing "connected" message
+		self.connected_time = None
+
+	def handle_events(self, event):
+		pass  # no interaction for now
+
+	def update(self):
+		current_time = time.time()
+		self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+
+		if self.status == "checking" and current_time - self.last_check_time > self.retry_interval:
+			self.last_check_time = current_time
+			try:
+				self.board = ABMI_Utils.connect_openbci()
+				self.status = "connected"
+				self.connected_time = current_time
+			except Exception as e:
+				print(f"Retrying: {e}")
+				self.status = "checking"
+
+		if self.status == "connected" and current_time - self.connected_time >= 2:
+			self.status = "wait_cables"		
+
+	def draw(self, surface):
+		surface.fill(white)
+
+		if self.status == "checking":
+			msg_en = "Checking for board connection, please wait..."
+			msg_jp = "ボード接続を確認中です、\nしばらくお待ちください..."
+		elif self.status == "connected":
+			msg_en = "BCI Device Connected"
+			msg_jp = "BCIデバイスが接続されました"
+		else:
+			msg_en = ""
+			msg_jp = ""
+
+		# Draw English and Japanese text
+		draw_text_wrapped(surface, msg_en, self.font_en, black, x=40, y=80, max_width=400)
+		draw_text_wrapped(surface, msg_jp, self.font_jp, black, x=40, y=180, max_width=400, lang="jp")
+		
+		# Draw spinner if checking
+		if self.status == "checking":
+			num_lines = 12
+			for i in range(num_lines):
+				angle_deg = (360 / num_lines) * i + self.spinner_angle
+				angle_rad = math.radians(angle_deg)
+				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
+# --- Impedance Check Scene ---
+class ImpedanceCheckScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.font_en = pygame.font.Font(notoFont, 24)
+		self.font_jp = pygame.font.Font(notoFont, 24)
+		self.status = "waiting"  # "waiting", "measuring", "done"
+		self.results = None
+
+	def handle_events(self, event):
+		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
+			if self.status == "done":
+				self.app.switch_scene("welcome")  # go back or next scene
+
+	def update(self):
+		if self.status == "waiting":
+			self.status = "measuring"
+			# Call ABMI-Utils impedance check
+			try:
+				self.results = ABMI_Utils.check_impedance()
+				self.status = "done"
+			except Exception as e:
+				self.results = str(e)
+				self.status = "done"
+
+	def draw(self, surface):
+		surface.fill(white)
+		
+		if self.status == "waiting":
+			msg_en = "Press any key to start impedance check"
+			msg_jp = "任意のキーを押してインピーダンスチェックを開始"
+		elif self.status == "measuring":
+			msg_en = "Measuring impedance...\nPlease wait"
+			msg_jp = "インピーダンス測定中です…\nしばらくお待ちください"
+		else:  # done
+			msg_en = "Impedance check complete"
+			msg_jp = "インピーダンスチェック完了"
+
+		draw_text_wrapped(surface, msg_en, self.font_en, black, x=40, y=80, max_width=400)
+		draw_text_wrapped(surface, msg_jp, self.font_jp, black, x=40, y=180, max_width=400)
+
+		# Optionally display results if done
+		if self.status == "done" and self.results is not None:
+			y_offset = 240
+			if isinstance(self.results, list):
+				for ch, z in self.results:
+					text = f"CH{ch}: {z:.2f} kΩ"
+					text_surf = self.font_en.render(text, True, black)
+					surface.blit(text_surf, (50, y_offset))
+					y_offset += text_surf.get_height() + 5
+			else:  # error string
+				text_surf = self.font_en.render(str(self.results), True, black)
+				surface.blit(text_surf, (50, y_offset))
+
 # --- Main App Class ---
 class BMITrainer:
 	def __init__(self):
 		# Initialize Pygame
 		pygame.init()
 
-		# Display
-		info = pygame.display.Info()
-		self.screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
+		# Force window position (top-left corner)
+		os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
+
+		# Open fixed 480x320 window
+		self.render_w, self.render_h = 480, 320
+		self.screen = pygame.display.set_mode((self.render_w, self.render_h), pygame.NOFRAME)
 		pygame.display.set_caption("BMI Trainer")
-		self.render_surface = pygame.Surface((480, 320))
+
 		self.clock = pygame.time.Clock()
 		self.running = True
 
@@ -182,6 +308,8 @@ class BMITrainer:
 		self.scenes = {
 			"welcome": WelcomeScene(self),
 			"wifi_check": WiFiCheckScene(self),
+			"bci_connect": BCIConnectScene(self),
+			"impedance_check": ImpedanceCheckScene(self),
 		}
 		self.current_scene = self.scenes["welcome"]
 
@@ -200,9 +328,7 @@ class BMITrainer:
 		while self.running:
 			self.handle_events()
 			self.current_scene.update()
-			self.current_scene.draw(self.render_surface)
-			scaled_surface = pygame.transform.scale(self.render_surface, self.screen.get_size())
-			self.screen.blit(scaled_surface, (0, 0))
+			self.current_scene.draw(self.screen)
 			pygame.display.flip()
 			self.clock.tick(60)
 
