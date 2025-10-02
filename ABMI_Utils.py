@@ -12,8 +12,8 @@ from scipy.signal import iirfilter, filtfilt
 import serial
 import serial.tools.list_ports
 import time
+import threading
 from pyOpenBCI import OpenBCICyton
-
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
 
 # --- Constants ---
@@ -24,20 +24,22 @@ SETTLE_SEC = 2.0			# Settling time after switching lead-off
 BAND = (5, 50)				# Bandpass filter range (Hz)
 CABLE_COLORS = ['gray', 'purple', 'blue', 'green', 'yellow', 'orange', 'red', 'brown']
 
-def handle_sample(sample):
-    pass  # placeholder
-
-def connect_openbci():
+def connect_openbci(callback):
+    """
+    Connect to an OpenBCI Cyton board and start streaming in a background thread.
+    
+    callback: function(sample) -> None
+        Called for each sample received from the board.
+    """
     ports = serial.tools.list_ports.comports()
     board_port = None
 
     for port in ports:
-        # Handle both named tuple / object and tuple cases
-        device = getattr(port, "device", None) or port[0]  # port.device if exists, else port[0]
-        desc = getattr(port, "description", "") or port[1]  # optional, for logging
+        device = getattr(port, "device", None) or port[0]
+        desc = getattr(port, "description", "") or port[1]
         print(f"Checking port: {device} - Desc: {desc}")
 
-        if "usbserial-DP04VZU5" in device or "ttyUSB" in device or "ttyACM" in device:
+        if "usbserial" in device or "ttyUSB" in device or "ttyACM" in device:
             board_port = device
             print(f"Found potential OpenBCI port: {board_port}")
             break
@@ -45,11 +47,11 @@ def connect_openbci():
     if board_port is None:
         raise Exception("OpenBCI board not found. Please check the connection.")
 
+    # Connect to board
     board = OpenBCICyton(port=board_port)
     
-    # Run streaming in a background thread to avoid blocking
-    import threading
-    threading.Thread(target=board.start_stream, args=(handle_sample,), daemon=True).start()
+    # Start streaming in a background thread
+    threading.Thread(target=board.start_stream, args=(callback,), daemon=True).start()
 
     print(f"Connected to OpenBCI board at {board_port}")
     return board
