@@ -4,6 +4,7 @@ import sys
 import socket
 import time
 import math
+import threading
 
 #Audio BMI Code by MIKITO OGINO
 import ABMI_Utils
@@ -195,16 +196,23 @@ class BCIConnectScene(Scene):
 
 		if self.status == "checking" and current_time - self.last_check_time > self.retry_interval:
 			self.last_check_time = current_time
-			try:
-				self.board = ABMI_Utils.connect_openbci()
-				self.status = "connected"
-				self.connected_time = current_time
-			except Exception as e:
-				print(f"Retrying: {e}")
-				self.status = "checking"
+			threading.Thread(target=self._try_connect, daemon=True).start()
 
 		if self.status == "connected" and current_time - self.connected_time >= 2:
-			self.status = "wait_cables"		
+			self.status = "wait_cables"
+
+	def _try_connect(self):
+		try:
+			# simple callback that just prints the shape of incoming data
+			def dummy_callback(data):
+				pass  # or print(data.shape)
+
+			self.board = ABMI_Utils.connect_openbci("/dev/ttyUSB0")  # or the correct port
+			self.status = "connected"
+			self.connected_time = time.time()
+		except Exception as e:
+			print(f"Retrying: {e}")
+			self.status = "checking"
 
 	def draw(self, surface):
 		surface.fill(white)
