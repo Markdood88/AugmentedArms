@@ -108,8 +108,8 @@ class BCIBoard:
 			print(f"Measuring CH{ch} ({color})...")
 
 			try:
-				ABMI_Utils.set_ads_to_impedance_on(self.board, ch)
-				ABMI_Utils.send_leadoff(self.board, ch, 0, 1)  # enable lead-off
+				set_ads_to_impedance_on(self.board, ch)
+				send_leadoff(self.board, ch, 0, 1)  # enable lead-off
 				time.sleep(SETTLE_SEC)
 
 				self.board.get_board_data()  # clear buffer
@@ -118,9 +118,9 @@ class BCIBoard:
 
 				row = BoardShim.get_eeg_channels(self.board_id)[ch - 1]
 				x_uV = data[row, :]
-				x_bp = ABMI_Utils.bandpass_apply(x_uV, self.fs)
-				uVrms = ABMI_Utils.take_recent_1s(x_bp, self.fs)
-				z_kohm = ABMI_Utils.calc_impedance_from_vrms(uVrms) / 1000.0
+				x_bp = bandpass_apply(x_uV, self.fs)
+				uVrms = take_recent_1s(x_bp, self.fs)
+				z_kohm = calc_impedance_from_vrms(uVrms) / 1000.0
 
 				results.append((ch, z_kohm))
 				print(f"CH{ch} ({color}): {z_kohm:.2f} kΩ")
@@ -131,7 +131,7 @@ class BCIBoard:
 
 			finally:
 				try:
-					ABMI_Utils.send_leadoff(self.board, ch, 0, 0)  # disable lead-off
+					send_leadoff(self.board, ch, 0, 0)  # disable lead-off
 				except Exception:
 					pass
 
