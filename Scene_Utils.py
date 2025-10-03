@@ -179,6 +179,7 @@ class BCIConnectScene(Scene):
 		self.retry_interval = 3  # seconds between retries
 		self.retry_count = 0
 		self.max_retries = 8
+		self.board = None
 
 		# Spinner setup
 		self.spinner_angle = 0
@@ -188,7 +189,6 @@ class BCIConnectScene(Scene):
 
 		# Timer for showing "connected" message
 		self.connected_time = None
-		self.cyton = None
 
 	def handle_events(self, event):
 		pass  # no interaction for now
@@ -208,14 +208,17 @@ class BCIConnectScene(Scene):
 
 	def _try_connect(self):
 		try:
-			self.cyton = ABMI_Utils.BCIBoard(port="/dev/ttyUSB0")
-			success = self.cyton.connect()
+			self.board = ABMI_Utils.BCIBoard(port="/dev/ttyUSB0")
+			success = self.board.connect()
 			if success:
 				self.status = "connected"
 				self.connected_time = time.time()
 				self.retry_count = 0
+				# Make the board globally accessible to other scenes
+				self.app.bciboard = self.board
 			else:
 				raise RuntimeError("Connection failed")
+			
 		except Exception as e:
 			print(f"Retrying: {e}")
 			self.retry_count += 1
@@ -274,28 +277,39 @@ class ImpedanceCheckScene(Scene):
 		pass  # no interaction during checking
 
 	def start_impedance_check(self):
+		self.status = "checking"        # immediately show the wheel
 		threading.Thread(target=self._impedance_worker, daemon=True).start()
 
 	def _impedance_worker(self):
 		self.status = "checking"
-		port = "/dev/ttyUSB0"  # update if needed
-		try:
-			self.board = ABMI_Utils.connect_openbci(port)
-			z_list = []
+		self.results = []
 
-			for ch, color in enumerate(self.cable_colors, start=1):
-				self.current_channel = ch
-				impedance_results = ABMI_Utils.check_impedance([ch])
-				z_list.extend(impedance_results)
-			self.results = z_list
-			self.status = "done"
+		if not hasattr(self.app, "bciboard") or self.app.bciboard is None:
+			# Should already exist, but fallback
+			self.app.bciboard = ABMI_Utils.BCIBoard(port="/dev/ttyUSB0")
+			try:
+				self.app.bciboard.connect()
+			except Exception as e:
+				self.results = str(e)
+				self.status = "done"
+				return
 
-		except Exception as e:
-			self.results = str(e)
-			self.status = "done"
+		for ch, color in enumerate(self.cable_colors, start=1):
+			self.current_channel = ch
+			try:
+				# check_impedance expects a list of channels
+				impedance_result = self.app.bciboard.check_impedance([ch])
+				self.results.extend(impedance_result)
+			except Exception as e:
+				self.results.append((ch, float("nan")))
+
+		self.status = "done"
+		self.current_channel = len(self.cable_colors)  # ensure last color shows
 
 	def update(self):
-		if self.status == "checking":
+		if self.status == "waiting":
+			self.start_impedance_check()  # will set status to "checking"
+		elif self.status == "checking":
 			self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
 
 	def draw(self, surface):
@@ -325,7 +339,7 @@ class ImpedanceCheckScene(Scene):
 				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
 
 		# --- Right side cable square ---
-		square_size = 100
+		square_size = 120
 		x_square = 320
 		y_square = 120
 		color_idx = max(0, self.current_channel - 1)
@@ -333,7 +347,7 @@ class ImpedanceCheckScene(Scene):
 		cable_color_rgb = pygame.Color(cable_color_name)
 
 		# Draw border
-		pygame.draw.rect(surface, black, (x_square, y_square, square_size, square_size), 2)
+		pygame.draw.rect(surface, black, (x_square, y_square, square_size, square_size), 5)
 		# Fill inside
 		pygame.draw.rect(surface, cable_color_rgb, (x_square+2, y_square+2, square_size-4, square_size-4))
 
@@ -353,6 +367,9 @@ class BMITrainer:
 
 		self.clock = pygame.time.Clock()
 		self.running = True
+
+		# global BCIBoard object
+		self.bciboard = None
 
 		# Scenes
 		self.scenes = {
