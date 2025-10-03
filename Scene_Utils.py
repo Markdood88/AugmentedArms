@@ -345,11 +345,21 @@ class ImpedanceCheckScene(Scene):
 		color_idx = max(0, self.current_channel - 1)
 		cable_color_name = self.cable_colors[color_idx] if self.status != "waiting" else 'gray'
 		cable_color_rgb = pygame.Color(cable_color_name)
+		border_thickness = 4
 
 		# Draw border
-		pygame.draw.rect(surface, black, (x_square, y_square, square_size, square_size), 5)
+		pygame.draw.rect(surface, black, (x_square, y_square, square_size, square_size), border_thickness)
 		# Fill inside
-		pygame.draw.rect(surface, cable_color_rgb, (x_square+2, y_square+2, square_size-4, square_size-4))
+		pygame.draw.rect(
+			surface,
+			cable_color_rgb,
+			(
+				x_square + border_thickness,
+				y_square + border_thickness,
+				square_size - 2 * border_thickness,
+				square_size - 2 * border_thickness
+			)
+		)
 
 # --- Main App Class ---
 class BMITrainer:
