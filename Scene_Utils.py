@@ -174,18 +174,21 @@ class BCIConnectScene(Scene):
 		super().__init__(app)
 		self.font_en = pygame.font.Font(notoFont, 22)
 		self.font_jp = pygame.font.Font(notoFont, 22)
-		self.status = "checking"  # "checking", "connected", "wait_cables"
+		self.status = "checking"  # "checking", "connected", "wait_cables", "failed"
 		self.last_check_time = 0
 		self.retry_interval = 3  # seconds between retries
+		self.retry_count = 0
+		self.max_retries = 8
 
 		# Spinner setup
 		self.spinner_angle = 0
 		self.spinner_radius = 20
-		self.spinner_center = (440, 280)  # bottom-right like WiFi spinner
+		self.spinner_center = (440, 280)
 		self.spinner_speed = -2  # degrees per frame
 
 		# Timer for showing "connected" message
 		self.connected_time = None
+		self.cyton = None
 
 	def handle_events(self, event):
 		pass  # no interaction for now
@@ -198,21 +201,28 @@ class BCIConnectScene(Scene):
 			self.last_check_time = current_time
 			threading.Thread(target=self._try_connect, daemon=True).start()
 
-		if self.status == "connected" and current_time - self.connected_time >= 2:
-			self.status = "wait_cables"
+		if self.status == "connected" and current_time - self.connected_time >= 1:
+			# Automatically move to ImpedanceCheckScene
+			self.app.switch_scene("impedance_check")
+
 
 	def _try_connect(self):
 		try:
-			# simple callback that just prints the shape of incoming data
-			def dummy_callback(data):
-				pass  # or print(data.shape)
-
-			self.board = ABMI_Utils.connect_openbci("/dev/ttyUSB0")  # or the correct port
-			self.status = "connected"
-			self.connected_time = time.time()
+			self.cyton = ABMI_Utils.BCIBoard(port="/dev/ttyUSB0")
+			success = self.cyton.connect()
+			if success:
+				self.status = "connected"
+				self.connected_time = time.time()
+				self.retry_count = 0
+			else:
+				raise RuntimeError("Connection failed")
 		except Exception as e:
 			print(f"Retrying: {e}")
-			self.status = "checking"
+			self.retry_count += 1
+			if self.retry_count >= self.max_retries:
+				self.status = "failed"
+			else:
+				self.status = "checking"
 
 	def draw(self, surface):
 		surface.fill(white)
@@ -223,13 +233,16 @@ class BCIConnectScene(Scene):
 		elif self.status == "connected":
 			msg_en = "BCI Device Connected"
 			msg_jp = "BCIデバイスが接続されました"
+		elif self.status == "failed":
+			msg_en = "Failed to connect to BCI Device\nPlease try again or contact support"
+			msg_jp = "BCIデバイスの接続に失敗しました\n再試行するかサポートに連絡してください"
 		else:
 			msg_en = ""
 			msg_jp = ""
 
 		# Draw English and Japanese text
 		draw_text_wrapped(surface, msg_en, self.font_en, black, x=40, y=80, max_width=400)
-		draw_text_wrapped(surface, msg_jp, self.font_jp, black, x=40, y=180, max_width=400, lang="jp")
+		draw_text_wrapped(surface, msg_jp, self.font_jp, black, x=40, y=180, max_width=420, lang="jp")
 		
 		# Draw spinner if checking
 		if self.status == "checking":
@@ -247,53 +260,82 @@ class ImpedanceCheckScene(Scene):
 		super().__init__(app)
 		self.font_en = pygame.font.Font(notoFont, 24)
 		self.font_jp = pygame.font.Font(notoFont, 24)
-		self.status = "waiting"  # "waiting", "measuring", "done"
+		self.status = "waiting"  # "waiting", "checking", "done"
 		self.results = None
+		self.current_channel = 0
+		self.cable_colors = ABMI_Utils.CABLE_COLORS
+		self.spinner_angle = 0
+		self.spinner_radius = 15
+		self.spinner_center = (120, 250)  # bottom-left spinner
+		self.spinner_speed = -5
+		self.board = None
 
 	def handle_events(self, event):
-		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
-			if self.status == "done":
-				self.app.switch_scene("welcome")  # go back or next scene
+		pass  # no interaction during checking
+
+	def start_impedance_check(self):
+		threading.Thread(target=self._impedance_worker, daemon=True).start()
+
+	def _impedance_worker(self):
+		self.status = "checking"
+		port = "/dev/ttyUSB0"  # update if needed
+		try:
+			self.board = ABMI_Utils.connect_openbci(port)
+			z_list = []
+
+			for ch, color in enumerate(self.cable_colors, start=1):
+				self.current_channel = ch
+				impedance_results = ABMI_Utils.check_impedance([ch])
+				z_list.extend(impedance_results)
+			self.results = z_list
+			self.status = "done"
+
+		except Exception as e:
+			self.results = str(e)
+			self.status = "done"
 
 	def update(self):
-		if self.status == "waiting":
-			self.status = "measuring"
-			# Call ABMI-Utils impedance check
-			try:
-				self.results = ABMI_Utils.check_impedance()
-				self.status = "done"
-			except Exception as e:
-				self.results = str(e)
-				self.status = "done"
+		if self.status == "checking":
+			self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
 
 	def draw(self, surface):
 		surface.fill(white)
-		
-		if self.status == "waiting":
-			msg_en = "Press any key to start impedance check"
-			msg_jp = "任意のキーを押してインピーダンスチェックを開始"
-		elif self.status == "measuring":
-			msg_en = "Measuring impedance...\nPlease wait"
-			msg_jp = "インピーダンス測定中です…\nしばらくお待ちください"
-		else:  # done
-			msg_en = "Impedance check complete"
-			msg_jp = "インピーダンスチェック完了"
 
-		draw_text_wrapped(surface, msg_en, self.font_en, black, x=40, y=80, max_width=400)
-		draw_text_wrapped(surface, msg_jp, self.font_jp, black, x=40, y=180, max_width=400)
+		# --- Left side texts ---
+		x_text = 40
+		y_text = 40
+		# Checking cable connection
+		draw_text_wrapped(surface, "Checking cable connection", self.font_en, black, x=x_text, y=y_text, max_width=400)
+		draw_text_wrapped(surface, "ケーブル接続を確認中", self.font_jp, black, x=x_text, y=y_text+40, max_width=400, lang="jp")
 
-		# Optionally display results if done
-		if self.status == "done" and self.results is not None:
-			y_offset = 240
-			if isinstance(self.results, list):
-				for ch, z in self.results:
-					text = f"CH{ch}: {z:.2f} kΩ"
-					text_surf = self.font_en.render(text, True, black)
-					surface.blit(text_surf, (50, y_offset))
-					y_offset += text_surf.get_height() + 5
-			else:  # error string
-				text_surf = self.font_en.render(str(self.results), True, black)
-				surface.blit(text_surf, (50, y_offset))
+		# Status line
+		status_text_en = "Checking..." if self.status == "checking" else "PASS"
+		status_text_jp = "確認中..." if self.status == "checking" else "合格"
+		draw_text_wrapped(surface, status_text_en, self.font_en, black, x=x_text, y=y_text+100, max_width=400)
+		draw_text_wrapped(surface, status_text_jp, self.font_jp, black, x=x_text, y=y_text+140, max_width=400, lang="jp")
+
+		# Spinner (only while checking)
+		if self.status == "checking":
+			num_lines = 12
+			for i in range(num_lines):
+				angle_deg = (360 / num_lines) * i + self.spinner_angle
+				angle_rad = math.radians(angle_deg)
+				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
+		# --- Right side cable square ---
+		square_size = 100
+		x_square = 320
+		y_square = 120
+		color_idx = max(0, self.current_channel - 1)
+		cable_color_name = self.cable_colors[color_idx] if self.status != "waiting" else 'gray'
+		cable_color_rgb = pygame.Color(cable_color_name)
+
+		# Draw border
+		pygame.draw.rect(surface, black, (x_square, y_square, square_size, square_size), 2)
+		# Fill inside
+		pygame.draw.rect(surface, cable_color_rgb, (x_square+2, y_square+2, square_size-4, square_size-4))
 
 # --- Main App Class ---
 class BMITrainer:
