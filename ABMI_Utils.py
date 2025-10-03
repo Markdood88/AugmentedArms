@@ -24,37 +24,119 @@ SETTLE_SEC = 2.0			# Settling time after switching lead-off
 BAND = (5, 50)				# Bandpass filter range (Hz)
 CABLE_COLORS = ['gray', 'purple', 'blue', 'green', 'yellow', 'orange', 'red', 'brown']
 
-def connect_openbci(callback):
-    """
-    Connect to an OpenBCI Cyton board and start streaming in a background thread.
-    
-    callback: function(sample) -> None
-        Called for each sample received from the board.
-    """
-    ports = serial.tools.list_ports.comports()
-    board_port = None
+class BCIBoard:
+	def __init__(self, port="/dev/ttyUSB0"):
+		self.port = port
+		self.board = None
+		self.board_id = BoardIds.CYTON_BOARD.value
+		self.fs = BoardShim.get_sampling_rate(self.board_id)
+		self.channels = list(range(1, 9))  # default 8 channels
 
-    for port in ports:
-        device = getattr(port, "device", None) or port[0]
-        desc = getattr(port, "description", "") or port[1]
-        print(f"Checking port: {device} - Desc: {desc}")
+	def connect(self):
+		BoardShim.disable_board_logger()
+		params = BrainFlowInputParams()
+		params.serial_port = self.port
+		self.board = BoardShim(self.board_id, params)
 
-        if "usbserial" in device or "ttyUSB" in device or "ttyACM" in device:
-            board_port = device
-            print(f"Found potential OpenBCI port: {board_port}")
-            break
+		try:
+			self.board.prepare_session()
+			self.board.start_stream()
+			print(f"Connected to OpenBCI board at {self.port}")
+			return True
 
-    if board_port is None:
-        raise Exception("OpenBCI board not found. Please check the connection.")
+		except Exception as e:
+			print(f"Failed to connect to OpenBCI board at {self.port}: {e}")
+			try:
+				self.board.release_session()
+			except Exception:
+				pass
+			self.board = None
+			return False
 
-    # Connect to board
-    board = OpenBCICyton(port=board_port)
-    
-    # Start streaming in a background thread
-    threading.Thread(target=board.start_stream, args=(callback,), daemon=True).start()
+	def disconnect(self):
+		if self.board:
+			try:
+				self.board.stop_stream()
+				self.board.release_session()
+				print(f"[BCIBoard] Disconnected from board at {self.port}")
+			except Exception:
+				pass
+			self.board = None
 
-    print(f"Connected to OpenBCI board at {board_port}")
-    return board
+	def stream(self, callback=None):
+		if not self.board:
+			print("[BCIBoard] Cannot start streaming: board not connected")
+			return
+
+		eeg_idxs = BoardShim.get_eeg_channels(self.board_id)
+		try:
+			ts_idx = BoardShim.get_timestamp_channel(self.board_id)
+		except Exception:
+			ts_idx = None
+
+		def _worker():
+			while True:
+				data = self.board.get_board_data()
+				if data.size > 0 and callback:
+					num_samples = data.shape[1]
+					for i in range(num_samples):
+						sample = {
+							"timestamp": float(data[ts_idx, i]) if ts_idx is not None else None,
+							"eeg": data[eeg_idxs, i]
+						}
+						try:
+							callback(sample)
+						except Exception:
+							pass
+				time.sleep(0.01)
+
+		threading.Thread(target=_worker, daemon=True).start()
+		print(f"[BCIBoard] Started streaming from board at {self.port}")
+
+	def check_impedance(self, channels=None):
+		channels = channels or self.channels
+		results = []
+
+		if not self.board:
+			print("Board not connected. Cannot check impedance.")
+			return results
+
+		print("Starting impedance check...")
+
+		for ch in channels:
+			color = CABLE_COLORS[ch - 1] if 1 <= ch <= len(CABLE_COLORS) else "black"
+			print(f"Measuring CH{ch} ({color})...")
+
+			try:
+				ABMI_Utils.set_ads_to_impedance_on(self.board, ch)
+				ABMI_Utils.send_leadoff(self.board, ch, 0, 1)  # enable lead-off
+				time.sleep(SETTLE_SEC)
+
+				self.board.get_board_data()  # clear buffer
+				time.sleep(MEAS_SEC + 0.2)
+				data = self.board.get_board_data()
+
+				row = BoardShim.get_eeg_channels(self.board_id)[ch - 1]
+				x_uV = data[row, :]
+				x_bp = ABMI_Utils.bandpass_apply(x_uV, self.fs)
+				uVrms = ABMI_Utils.take_recent_1s(x_bp, self.fs)
+				z_kohm = ABMI_Utils.calc_impedance_from_vrms(uVrms) / 1000.0
+
+				results.append((ch, z_kohm))
+				print(f"CH{ch} ({color}): {z_kohm:.2f} kΩ")
+
+			except Exception as e:
+				results.append((ch, float('nan')))
+				print(f"Failed to measure CH{ch}: {e}")
+
+			finally:
+				try:
+					ABMI_Utils.send_leadoff(self.board, ch, 0, 0)  # disable lead-off
+				except Exception:
+					pass
+
+		print("Impedance check complete.")
+		return results
 
 def set_ads_to_impedance_on(board, ch: int):
 	"""
@@ -183,9 +265,11 @@ def check_impedance(channels=[1,2,3,4,5,6,7,8]):
 		except Exception:
 			pass
 
+'''
 if __name__ == "__main__":
 	impedance_list = check_impedance(channels=[1,2,3,4,5,6,7,8])
 	print("\n=== Summary ===")
 	for ch, z in impedance_list:
 		color = CABLE_COLORS[ch - 1] if 1 <= ch <= len(CABLE_COLORS) else 'black'
 		print(f"CH{ch}({color}): {z:.2f} kΩ")
+'''
