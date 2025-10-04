@@ -22,6 +22,21 @@ I_DRIVE = 6.0e-9			# Lead-off drive current (6 nA default)
 MEAS_SEC = 2.0				# Measurement duration in seconds
 SETTLE_SEC = 2.0			# Settling time after switching lead-off
 BAND = (5, 50)				# Bandpass filter range (Hz)
+
+# Hand-coded color table for cable impedance display
+# Each color is defined as RGB tuple (0-255 range)
+CABLE_COLORS_RGB = [
+    (120, 120, 120),  # Channel 1: Gray
+    (129, 37, 186),    # Channel 2: Purple  
+    (19, 26, 120),      # Channel 3: Blue
+    (24, 168, 101),      # Channel 4: Green
+    (196, 187, 16),    # Channel 5: Yellow
+    (219, 120, 13),    # Channel 6: Orange
+    (196, 0, 0),      # Channel 7: Red
+    (107, 54, 29)     # Channel 8: Brown
+]
+
+# Legacy string color names for backward compatibility
 CABLE_COLORS = ['gray', 'purple', 'blue', 'green', 'yellow', 'orange', 'red', 'brown']
 
 class BCIBoard:
@@ -200,6 +215,7 @@ def send_leadoff(board, ch, p_apply, n_apply):
 	board.config_board(cmd)
 	time.sleep(0.02)
 
+'''
 def check_impedance(channels=[1,2,3,4,5,6,7,8]):
 	"""
 	Check electrode impedance for selected channels.
@@ -264,6 +280,7 @@ def check_impedance(channels=[1,2,3,4,5,6,7,8]):
 			board.release_session()
 		except Exception:
 			pass
+'''
 
 '''
 if __name__ == "__main__":
