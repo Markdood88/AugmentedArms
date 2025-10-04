@@ -5,6 +5,7 @@ import socket
 import time
 import math
 import threading
+import numpy as np
 
 #Audio BMI Code by MIKITO OGINO
 import ABMI_Utils
@@ -23,7 +24,7 @@ soft_red = (250,61,55)
 red = (200,0,0)
 black = (0,0,0)
 light_green = (82,255,128)
-light_yellow = (255,246,120)
+light_yellow = (220,200,80)
 green = (0,200,0)
 mint_green = (54,217,62)
 dark_green = (2,140,0)
@@ -220,11 +221,12 @@ class BCIConnectScene(Scene):
 				raise RuntimeError("Connection failed")
 			
 		except Exception as e:
-			print(f"Retrying: {e}")
 			self.retry_count += 1
 			if self.retry_count >= self.max_retries:
+				print("Connection Failed")
 				self.status = "failed"
 			else:
+				print("Connection Failed, Retrying...")
 				self.status = "checking"
 
 	def draw(self, surface):
@@ -266,10 +268,10 @@ class ImpedanceCheckScene(Scene):
 		self.status = "waiting"  # "waiting", "checking", "done"
 		self.results = None
 		self.current_channel = 0
-		self.cable_colors = ABMI_Utils.CABLE_COLORS
+		self.cable_colors_rgb = ABMI_Utils.CABLE_COLORS_RGB
 		self.spinner_angle = 0
 		self.spinner_radius = 15
-		self.spinner_center = (120, 250)  # bottom-left spinner
+		self.spinner_center = (40, 280)  # bottom-left spinner
 		self.spinner_speed = -5
 		self.board = None
 
@@ -294,7 +296,7 @@ class ImpedanceCheckScene(Scene):
 				self.status = "done"
 				return
 
-		for ch, color in enumerate(self.cable_colors, start=1):
+		for ch, color_rgb in enumerate(self.cable_colors_rgb, start=1):
 			self.current_channel = ch
 			try:
 				# check_impedance expects a list of channels
@@ -304,29 +306,29 @@ class ImpedanceCheckScene(Scene):
 				self.results.append((ch, float("nan")))
 
 		self.status = "done"
-		self.current_channel = len(self.cable_colors)  # ensure last color shows
+		self.current_channel = len(self.cable_colors_rgb)  # ensure last color shows
+		
+		# Store results in main app for access by other scenes
+		self.app.impedance_results = self.results
 
 	def update(self):
 		if self.status == "waiting":
 			self.start_impedance_check()  # will set status to "checking"
 		elif self.status == "checking":
 			self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+		elif self.status == "done":
+			# Switch to results scene immediately
+			self.app.switch_scene("impedance_results")
 
 	def draw(self, surface):
 		surface.fill(white)
 
 		# --- Left side texts ---
 		x_text = 40
-		y_text = 40
+		y_text = 80
 		# Checking cable connection
-		draw_text_wrapped(surface, "Checking cable connection", self.font_en, black, x=x_text, y=y_text, max_width=400)
-		draw_text_wrapped(surface, "ケーブル接続を確認中", self.font_jp, black, x=x_text, y=y_text+40, max_width=400, lang="jp")
-
-		# Status line
-		status_text_en = "Checking..." if self.status == "checking" else "PASS"
-		status_text_jp = "確認中..." if self.status == "checking" else "合格"
-		draw_text_wrapped(surface, status_text_en, self.font_en, black, x=x_text, y=y_text+100, max_width=400)
-		draw_text_wrapped(surface, status_text_jp, self.font_jp, black, x=x_text, y=y_text+140, max_width=400, lang="jp")
+		draw_text_wrapped(surface, "Checking cable connection...", self.font_en, black, x=x_text, y=y_text, max_width=200)
+		draw_text_wrapped(surface, "ケーブル接続を確認中...", self.font_jp, black, x=x_text, y=y_text+90, max_width=300, lang="jp")
 
 		# Spinner (only while checking)
 		if self.status == "checking":
@@ -341,10 +343,12 @@ class ImpedanceCheckScene(Scene):
 		# --- Right side cable square ---
 		square_size = 120
 		x_square = 320
-		y_square = 120
+		y_square = 90
 		color_idx = max(0, self.current_channel - 1)
-		cable_color_name = self.cable_colors[color_idx] if self.status != "waiting" else 'gray'
-		cable_color_rgb = pygame.Color(cable_color_name)
+		if self.status == "waiting":
+			cable_color_rgb = (0, 0, 0)  # Black for waiting
+		else:
+			cable_color_rgb = self.cable_colors_rgb[color_idx] if color_idx < len(self.cable_colors_rgb) else (128, 128, 128)
 		border_thickness = 4
 
 		# Draw border
@@ -360,6 +364,138 @@ class ImpedanceCheckScene(Scene):
 				square_size - 2 * border_thickness
 			)
 		)
+
+# --- Impedance Results Scene ---
+class ImpedanceResultsScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.font_en = pygame.font.Font(notoFont, 16)
+		self.font_jp = pygame.font.Font(notoFont, 14)
+		self.font_large = pygame.font.Font(notoFont, 20)
+		
+		# Color names mapping
+		self.color_names = ["Gray", "Purple", "Blue", "Green", "Yellow", "Orange", "Red", "Brown"]
+		
+		# Results will be set when switching to this scene
+		self.results = []
+
+	def handle_events(self, event):
+		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
+			# Go back to main menu or next scene
+			pass  # Add navigation logic as needed
+
+	def update(self):
+		pass
+
+	def draw(self, surface):
+		surface.fill(white)
+		
+		# Get results from main app
+		results = self.app.impedance_results
+		
+		# Title
+		title_en = "Results"
+		title_jp = "結果"
+		title_surface_en = self.font_large.render(title_en, True, black)
+		title_surface_jp = self.font_large.render(title_jp, True, black)
+		
+		title_rect_en = title_surface_en.get_rect(center=(220, 35))
+		surface.blit(title_surface_en, title_rect_en)
+		
+		# Japanese title to the right of English
+		title_rect_jp = title_surface_jp.get_rect(center=(300, 35))
+		surface.blit(title_surface_jp, title_rect_jp)
+		
+		# Column headers
+		header_y = 55
+		col1_x = 50   # Cable color name
+		col2_x = 180  # Impedance value
+		col3_x = 320  # Pass/Fail
+		
+		# Headers
+		header_font = pygame.font.Font(notoFont, 14)
+		header1 = header_font.render("Cable", True, black)
+		header2 = header_font.render("Impedance (kΩ)", True, black)
+		header3 = header_font.render("Status", True, black)
+		
+		surface.blit(header1, (col1_x, header_y))
+		surface.blit(header2, (col2_x, header_y))
+		surface.blit(header3, (col3_x, header_y))
+		
+		# Draw results for each channel
+		row_height = 22
+		start_y = header_y + 20
+		
+		for i, (channel, impedance) in enumerate(results):
+			row_y = start_y + (i * row_height)
+			
+			# Skip if we don't have results for this channel
+			if i >= len(self.color_names):
+				break
+			
+			# Column 1: Cable color name
+			color_name = self.color_names[i]
+			color_surface = self.font_en.render(color_name, True, black)
+			surface.blit(color_surface, (col1_x, row_y))
+			
+			# Column 2: Impedance value with color coding
+			if not np.isnan(impedance):
+				impedance_text = f"{impedance:.1f}"
+				
+				# Color coding based on impedance value
+				if impedance < 50:
+					value_color = green
+				elif impedance < 100:
+					value_color = warning_orange
+				else:
+					value_color = red
+					
+				impedance_surface = self.font_en.render(impedance_text, True, value_color)
+				surface.blit(impedance_surface, (col2_x, row_y))
+			else:
+				# Handle NaN values
+				impedance_surface = self.font_en.render("N/A", True, black)
+				surface.blit(impedance_surface, (col2_x, row_y))
+			
+			# Column 3: Pass/Fail status
+			if not np.isnan(impedance):
+				if impedance < 100:
+					status_en = "PASS"
+					status_jp = "合格"
+					status_color = green
+				else:
+					status_en = "FAIL"
+					status_jp = "不合格"
+					status_color = red
+			else:
+				status_en = "N/A"
+				status_jp = "N/A"
+				status_color = black
+			
+			# Draw English status
+			status_surface_en = self.font_en.render(status_en, True, status_color)
+			surface.blit(status_surface_en, (col3_x, row_y))
+			
+			# Draw Japanese status to the right
+			status_surface_jp = self.font_jp.render(status_jp, True, status_color)
+			surface.blit(status_surface_jp, (col3_x + 60, row_y))
+		
+		# Check if any status is FAIL and show warning at bottom
+		has_fail = False
+		for channel, impedance in results:
+			if not np.isnan(impedance) and impedance >= 100:
+				has_fail = True
+				break
+		
+		if has_fail:
+			# Warning message at bottom
+			warning_en = "Cable connection is weak, please fix and restart"
+			warning_jp = "ケーブル接続が弱いです、修正して再起動してください"
+			warning_surface_en = self.font_en.render(warning_en, True, red)
+			warning_surface_jp = self.font_jp.render(warning_jp, True, red)
+			
+			surface.blit(warning_surface_en, (50, 260))
+			surface.blit(warning_surface_jp, (50, 280))
 
 # --- Main App Class ---
 class BMITrainer:
@@ -380,6 +516,8 @@ class BMITrainer:
 
 		# global BCIBoard object
 		self.bciboard = None
+		# Impedance check results
+		self.impedance_results = []
 
 		# Scenes
 		self.scenes = {
@@ -387,6 +525,7 @@ class BMITrainer:
 			"wifi_check": WiFiCheckScene(self),
 			"bci_connect": BCIConnectScene(self),
 			"impedance_check": ImpedanceCheckScene(self),
+			"impedance_results": ImpedanceResultsScene(self),
 		}
 		self.current_scene = self.scenes["welcome"]
 
