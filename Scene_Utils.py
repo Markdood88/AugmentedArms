@@ -87,12 +87,12 @@ class WelcomeScene(Scene):
 
 		# English text (top)
 		text_surface_en = self.font_en.render("Welcome to BMI Trainer", True, black)
-		text_rect_en = text_surface_en.get_rect(center=(240, 120))
+		text_rect_en = text_surface_en.get_rect(center=(240, 110))
 		surface.blit(text_surface_en, text_rect_en)
 
 		# Japanese text (bottom)
 		text_surface_jp = self.font_jp.render("BMIトレーナーへようこそ", True, black)
-		text_rect_jp = text_surface_jp.get_rect(center=(240, 200))
+		text_rect_jp = text_surface_jp.get_rect(center=(240, 190))
 		surface.blit(text_surface_jp, text_rect_jp)
 
 # --- Main Menu Scene (placeholder) ---
@@ -273,133 +273,6 @@ class BCIConnectScene(Scene):
 				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
 				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
 
-# --- Impedance Check Scene ---
-class ImpedanceCheckScene(Scene):
-	def __init__(self, app):
-		super().__init__(app)
-		self.font_en = pygame.font.Font(notoFont, 24)
-		self.font_jp = pygame.font.Font(notoFont, 24)
-		self.status = "waiting"  # "waiting", "checking", "done"
-		self.results = None
-		self.current_channel = 0
-		self.cable_colors_rgb = ABMI_Utils.CABLE_COLORS_RGB
-		self.spinner_angle = 0
-		self.spinner_radius = 15
-		self.spinner_center = (40, 280)  # bottom-left spinner
-		self.spinner_speed = -5
-		self.board = None
-		
-		# Simulated impedance values for developer mode (in kΩ)
-		# Order: Gray, Purple, Blue, Green, Yellow, Orange, Red, Brown
-		self.simulated_impedances = [40.8, 59.23, 4000.0, 25.5, 75.2, 120.5, 85.7, 45.3]
-
-	def handle_events(self, event):
-		pass  # no interaction during checking
-
-	def start_impedance_check(self):
-		self.status = "checking"        # immediately show the wheel
-		threading.Thread(target=self._impedance_worker, daemon=True).start()
-
-	def _impedance_worker(self):
-		self.status = "checking"
-		self.results = []
-
-		# Developer mode override - use simulated impedance values
-		if self.app.developer_mode:
-			for ch, color_rgb in enumerate(self.cable_colors_rgb, start=1):
-				self.current_channel = ch
-				# Use simulated impedance value for this channel
-				simulated_value = self.simulated_impedances[ch - 1]  # ch is 1-based, list is 0-based
-				self.results.append((ch, simulated_value))
-				# Small delay to simulate checking time
-				time.sleep(2)
-			
-			self.status = "done"
-			self.current_channel = len(self.cable_colors_rgb)  # ensure last color shows
-			# Store results in main app for access by other scenes
-			self.app.impedance_results = self.results
-			return
-
-		# Normal mode - check actual board
-		if not hasattr(self.app, "bciboard") or self.app.bciboard is None:
-			# Should already exist, but fallback
-			self.app.bciboard = ABMI_Utils.BCIBoard(port="/dev/ttyUSB0")
-			try:
-				self.app.bciboard.connect()
-			except Exception as e:
-				self.results = str(e)
-				self.status = "done"
-				return
-
-		for ch, color_rgb in enumerate(self.cable_colors_rgb, start=1):
-			self.current_channel = ch
-			try:
-				# check_impedance expects a list of channels
-				impedance_result = self.app.bciboard.check_impedance([ch])
-				self.results.extend(impedance_result)
-			except Exception as e:
-				self.results.append((ch, float("nan")))
-
-		self.status = "done"
-		self.current_channel = len(self.cable_colors_rgb)  # ensure last color shows
-		
-		# Store results in main app for access by other scenes
-		self.app.impedance_results = self.results
-
-	def update(self):
-		if self.status == "waiting":
-			self.start_impedance_check()  # will set status to "checking"
-		elif self.status == "checking":
-			self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
-		elif self.status == "done":
-			# Switch to results scene immediately
-			self.app.switch_scene("impedance_results")
-
-	def draw(self, surface):
-		surface.fill(white)
-
-		# --- Left side texts ---
-		x_text = 40
-		y_text = 80
-		# Checking cable connection
-		draw_text_wrapped(surface, "Checking cable connection...", self.font_en, black, x=x_text, y=y_text, max_width=200)
-		draw_text_wrapped(surface, "ケーブル接続を確認中...", self.font_jp, black, x=x_text, y=y_text+90, max_width=300, lang="jp")
-
-		# Spinner (only while checking)
-		if self.status == "checking":
-			num_lines = 12
-			for i in range(num_lines):
-				angle_deg = (360 / num_lines) * i + self.spinner_angle
-				angle_rad = math.radians(angle_deg)
-				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
-				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
-				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
-
-		# --- Right side cable square ---
-		square_size = 120
-		x_square = 320
-		y_square = 90
-		color_idx = max(0, self.current_channel - 1)
-		if self.status == "waiting":
-			cable_color_rgb = (0, 0, 0)  # Black for waiting
-		else:
-			cable_color_rgb = self.cable_colors_rgb[color_idx] if color_idx < len(self.cable_colors_rgb) else (128, 128, 128)
-		border_thickness = 4
-
-		# Draw border
-		pygame.draw.rect(surface, black, (x_square, y_square, square_size, square_size), border_thickness)
-		# Fill inside
-		pygame.draw.rect(
-			surface,
-			cable_color_rgb,
-			(
-				x_square + border_thickness,
-				y_square + border_thickness,
-				square_size - 2 * border_thickness,
-				square_size - 2 * border_thickness
-			)
-		)
-
 # --- Impedance Check Single Scene (for individual cables) ---
 class ImpedanceCheckSingleScene(Scene):
 	def __init__(self, app, cable_index, cable_name, cable_color_rgb):
@@ -478,8 +351,8 @@ class ImpedanceCheckSingleScene(Scene):
 		surface.fill(white)
 
 		# --- Left side texts ---
-		x_text = 35
-		y_text = 65
+		x_text = 30
+		y_text = 60
 		# Checking specific cable connection
 		cable_msg_en = f"Checking {self.cable_name} cable connection..."
 		cable_msg_jp = f"{self.cable_name}ケーブル接続を確認中..."
@@ -532,22 +405,66 @@ class ImpedanceResultsSingleScene(Scene):
 		self.cable_index = None
 		self.cable_name = None
 		self.impedance_value = None
+		self.retry_needed = False
 
 	def handle_events(self, event):
 		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
+			if self.retry_needed:
+				# Retry same cable check
+				print(f"Retrying impedance check for {self.cable_name}...")
+				self.app.switch_scene(f"impedance_check_{self.cable_name}")
+				return
+
 			# Move to next cable or finish
 			if self.cable_index is not None:
 				next_index = self.cable_index + 1
 				if next_index < len(ABMI_Utils.CABLE_COLORS):
-					# Move to next cable
 					next_cable_name = ABMI_Utils.CABLE_COLORS[next_index]
 					self.app.switch_scene(f"impedance_check_{next_cable_name}")
 				else:
-					# All cables checked, go to final results or next scene
 					self.app.switch_scene("impedance_results")
 
 	def update(self):
 		# Get results from main app
+		if hasattr(self.app, 'current_cable_result'):
+			self.cable_index, self.cable_name, self.impedance_value = self.app.current_cable_result
+
+class ImpedanceResultsSingleScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.font_en = pygame.font.Font(notoFont, 20)
+		self.font_jp = pygame.font.Font(notoFont, 18)
+		self.font_large = pygame.font.Font(notoFont, 24)
+		
+		self.cable_index = None
+		self.cable_name = None
+		self.impedance_value = None
+		self.retry_needed = False
+
+	def handle_events(self, event):
+		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
+			if self.retry_needed:
+				scene_key = f"impedance_check_{self.cable_name.lower()}"
+				print(f"Retrying impedance check for {self.cable_name}...")
+
+				# Reset the status so the check starts over
+				cable_scene = self.app.scenes[scene_key]
+				cable_scene.status = "waiting"
+				cable_scene.result = None
+				cable_scene.dev_sim_start_time = None  # if in developer mode
+
+				self.app.switch_scene(scene_key)
+				return
+
+			if self.cable_index is not None:
+				next_index = self.cable_index + 1
+				if next_index < len(ABMI_Utils.CABLE_COLORS):
+					next_cable_name = ABMI_Utils.CABLE_COLORS[next_index]
+					self.app.switch_scene(f"impedance_check_{next_cable_name}")
+				else:
+					self.app.switch_scene("impedance_results")
+
+	def update(self):
 		if hasattr(self.app, 'current_cable_result'):
 			self.cable_index, self.cable_name, self.impedance_value = self.app.current_cable_result
 
@@ -557,60 +474,60 @@ class ImpedanceResultsSingleScene(Scene):
 		if self.cable_name is None:
 			return
 		
-		# Title
+		if not np.isnan(self.impedance_value):
+			# Determine color and retry flag
+			if self.impedance_value < 50:
+				value_color = green
+				status_text, status_jp = "EXCELLENT", "優秀"
+				self.retry_needed = False
+			elif self.impedance_value < 100:
+				value_color = warning_orange
+				status_text, status_jp = "GOOD", "良好"
+				self.retry_needed = False
+			else:
+				value_color = red
+				status_text, status_jp = "POOR", "不良"
+				self.retry_needed = True
+		else:
+			value_color = red
+			status_text, status_jp = "ERROR", "接続エラー"
+			self.retry_needed = True
+
+		# Shift all text upward if retry needed
+		y_offset = -30 if self.retry_needed else 0
+
+		# Titles
 		title_en = f"{self.cable_name} Cable Result"
 		title_jp = f"{self.cable_name}ケーブル結果"
 		title_surface_en = self.font_large.render(title_en, True, black)
 		title_surface_jp = self.font_large.render(title_jp, True, black)
-		
-		title_rect_en = title_surface_en.get_rect(center=(240, 60))
-		surface.blit(title_surface_en, title_rect_en)
-		
-		title_rect_jp = title_surface_jp.get_rect(center=(240, 90))
-		surface.blit(title_surface_jp, title_rect_jp)
-		
-		# Impedance value display
+		surface.blit(title_surface_en, title_surface_en.get_rect(center=(240, 80 + y_offset)))
+		surface.blit(title_surface_jp, title_surface_jp.get_rect(center=(240, 120 + y_offset)))
+
+		# Impedance text (skip if NaN handled below)
 		if not np.isnan(self.impedance_value):
-			impedance_text = f"{self.impedance_value:.1f} kΩ"
-			
-			# Color coding based on impedance value
-			if self.impedance_value < 50:
-				value_color = green
-				status_text = "EXCELLENT"
-				status_jp = "優秀"
-			elif self.impedance_value < 100:
-				value_color = warning_orange
-				status_text = "GOOD"
-				status_jp = "良好"
-			else:
-				value_color = red
-				status_text = "POOR"
-				status_jp = "不良"
-				
-			impedance_surface = self.font_large.render(impedance_text, True, value_color)
-			impedance_rect = impedance_surface.get_rect(center=(240, 150))
-			surface.blit(impedance_surface, impedance_rect)
-			
-			# Status display
+			imp_text = f"{self.impedance_value:.1f} kΩ"
+			imp_surface = self.font_large.render(imp_text, True, value_color)
+			surface.blit(imp_surface, imp_surface.get_rect(center=(240, 170 + y_offset)))
+
 			status_surface_en = self.font_en.render(status_text, True, value_color)
 			status_surface_jp = self.font_jp.render(status_jp, True, value_color)
-			
-			status_rect_en = status_surface_en.get_rect(center=(240, 180))
-			status_rect_jp = status_surface_jp.get_rect(center=(240, 210))
-			surface.blit(status_surface_en, status_rect_en)
-			surface.blit(status_surface_jp, status_rect_jp)
-			
+			surface.blit(status_surface_en, status_surface_en.get_rect(center=(240, 200 + y_offset)))
+			surface.blit(status_surface_jp, status_surface_jp.get_rect(center=(240, 230 + y_offset)))
 		else:
-			# Handle NaN values
-			error_text = "CONNECTION ERROR"
-			error_jp = "接続エラー"
-			error_surface = self.font_large.render(error_text, True, red)
-			error_rect = error_surface.get_rect(center=(240, 150))
-			surface.blit(error_surface, error_rect)
-			
-			error_surface_jp = self.font_jp.render(error_jp, True, red)
-			error_rect_jp = error_surface_jp.get_rect(center=(240, 180))
-			surface.blit(error_surface_jp, error_rect_jp)
+			err_en = self.font_large.render("CONNECTION ERROR", True, red)
+			err_jp = self.font_jp.render("接続エラー", True, red)
+			surface.blit(err_en, err_en.get_rect(center=(240, 180 + y_offset)))
+			surface.blit(err_jp, err_jp.get_rect(center=(240, 210 + y_offset)))
+
+		# Retry message
+		if self.retry_needed:
+			msg_en = "Please fix the cable connection and retry."
+			msg_jp = "ケーブルの接続を直して、再試行してください。"
+			msg_surface_en = self.font_en.render(msg_en, True, black)
+			msg_surface_jp = self.font_jp.render(msg_jp, True, black)
+			surface.blit(msg_surface_en, msg_surface_en.get_rect(center=(240, 280 + y_offset)))
+			surface.blit(msg_surface_jp, msg_surface_jp.get_rect(center=(240, 310 + y_offset)))
 
 # --- Impedance Results Scene ---
 class ImpedanceResultsScene(Scene):
@@ -762,7 +679,7 @@ class BMITrainer:
 		self.running = True
 
 		# Developer mode flag - set to True to enable developer overrides
-		self.developer_mode = True
+		self.developer_mode = False
 
 		# global BCIBoard object
 		self.bciboard = None
@@ -776,7 +693,6 @@ class BMITrainer:
 			"welcome": WelcomeScene(self),
 			"wifi_check": WiFiCheckScene(self),
 			"bci_connect": BCIConnectScene(self),
-			"impedance_check": ImpedanceCheckScene(self),
 			"impedance_results": ImpedanceResultsScene(self),
 			"impedance_results_single": ImpedanceResultsSingleScene(self),
 		}
