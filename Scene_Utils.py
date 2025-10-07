@@ -500,25 +500,41 @@ class TrainerScene(Scene):
 	def __init__(self, app):
 		super().__init__(app)
 		self.font = pygame.font.Font(notoFont, 28)
-		self.buttons = []
 
+		# Raw window size
 		screen_width = app.render_w
 		screen_height = app.render_h
 
-		btn_width = int(screen_width / 3)
-		btn_height = int(screen_height / 3)
+		# Fixed button sizes
+		btn_width = 150
+		btn_height = 90
 
-		# Create three buttons stacked vertically on the left
-		for i in range(3):
-			rect = pygame.Rect(10, i * (btn_height + 10) + 10, btn_width - 20, btn_height - 20)
-			self.buttons.append({"rect": rect, "number": i + 1})
+		# --- Button 1 ---
+		self.button1 = {
+			"rect": pygame.Rect(10, 15, btn_width, btn_height),
+			"text": "Button 1"
+		}
+
+		# --- Button 2 ---
+		self.button2 = {
+			"rect": pygame.Rect(10, 115, btn_width, btn_height),
+			"text": "Button 2"
+		}
+
+		# --- Button 3 ---
+		self.button3 = {
+			"rect": pygame.Rect(10, 215, btn_width, btn_height),
+			"text": "Button 3"
+		}
+
+		self.buttons = [self.button1, self.button2, self.button3]
 
 	def handle_events(self, event):
 		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
 			mx, my = event.pos
 			for btn in self.buttons:
 				if btn["rect"].collidepoint(mx, my):
-					print(f"Button {btn['number']} clicked!")
+					print(f"{btn['text']} clicked!")
 
 	def update(self):
 		pass
@@ -528,10 +544,10 @@ class TrainerScene(Scene):
 		for btn in self.buttons:
 			# Draw outline
 			pygame.draw.rect(surface, black, btn["rect"], 3)
-			# Draw number centered
-			num_surface = self.font.render(str(btn["number"]), True, black)
-			num_rect = num_surface.get_rect(center=btn["rect"].center)
-			surface.blit(num_surface, num_rect)
+			# Draw text centered
+			text_surface = self.font.render(btn["text"], True, black)
+			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			surface.blit(text_surface, text_rect)
 
 # --- Main App Class ---
 class BMITrainer:
@@ -552,6 +568,8 @@ class BMITrainer:
 
 		# Developer mode flag - set to True to enable developer overrides
 		self.developer_mode = True
+		# Scene to start in when developer mode is active
+		self.dev_start_scene = "trainer"
 
 		# global BCIBoard object
 		self.bciboard = None
@@ -576,8 +594,15 @@ class BMITrainer:
 			self.scenes[scene_name] = ImpedanceCheckSingleScene(self, i, name_title, color)
 		self.current_scene = self.scenes["welcome"]
 
+		# Set starting scene
+		if self.developer_mode and self.dev_start_scene in self.scenes:
+			self.current_scene = self.scenes[self.dev_start_scene]
+		else:
+			self.current_scene = self.scenes["welcome"]
+
 	def switch_scene(self, scene_name):
-		self.current_scene = self.scenes[scene_name]
+		if scene_name in self.scenes:
+			self.current_scene = self.scenes[scene_name]
 
 	def handle_events(self):
 		for event in pygame.event.get():
