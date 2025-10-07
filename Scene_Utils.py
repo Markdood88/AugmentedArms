@@ -304,7 +304,7 @@ class ImpedanceCheckSingleScene(Scene):
 			# Start non-blocking simulation timing
 			self.dev_sim_start_time = time.time()
 			# Precompute simulated result for this cable
-			simulated_impedances = [40.8, 59.23, 4000.0, 25.5, 75.2, 120.5, 85.7, 45.3]
+			simulated_impedances = [40.8, 59.23, 40.0, 25.5, 75.2, 12.5, 85.7, 45.3]
 			self.result = simulated_impedances[self.cable_index]
 		else:
 			threading.Thread(target=self._impedance_worker, daemon=True).start()
@@ -410,40 +410,6 @@ class ImpedanceResultsSingleScene(Scene):
 	def handle_events(self, event):
 		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
 			if self.retry_needed:
-				# Retry same cable check
-				print(f"Retrying impedance check for {self.cable_name}...")
-				self.app.switch_scene(f"impedance_check_{self.cable_name}")
-				return
-
-			# Move to next cable or finish
-			if self.cable_index is not None:
-				next_index = self.cable_index + 1
-				if next_index < len(ABMI_Utils.CABLE_COLORS):
-					next_cable_name = ABMI_Utils.CABLE_COLORS[next_index]
-					self.app.switch_scene(f"impedance_check_{next_cable_name}")
-				else:
-					self.app.switch_scene("impedance_results")
-
-	def update(self):
-		# Get results from main app
-		if hasattr(self.app, 'current_cable_result'):
-			self.cable_index, self.cable_name, self.impedance_value = self.app.current_cable_result
-
-class ImpedanceResultsSingleScene(Scene):
-	def __init__(self, app):
-		super().__init__(app)
-		self.font_en = pygame.font.Font(notoFont, 20)
-		self.font_jp = pygame.font.Font(notoFont, 18)
-		self.font_large = pygame.font.Font(notoFont, 24)
-		
-		self.cable_index = None
-		self.cable_name = None
-		self.impedance_value = None
-		self.retry_needed = False
-
-	def handle_events(self, event):
-		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
-			if self.retry_needed:
 				scene_key = f"impedance_check_{self.cable_name.lower()}"
 				print(f"Retrying impedance check for {self.cable_name}...")
 
@@ -462,7 +428,7 @@ class ImpedanceResultsSingleScene(Scene):
 					next_cable_name = ABMI_Utils.CABLE_COLORS[next_index]
 					self.app.switch_scene(f"impedance_check_{next_cable_name}")
 				else:
-					self.app.switch_scene("impedance_results")
+					self.app.switch_scene("trainer")
 
 	def update(self):
 		if hasattr(self.app, 'current_cable_result'):
@@ -529,137 +495,43 @@ class ImpedanceResultsSingleScene(Scene):
 			surface.blit(msg_surface_en, msg_surface_en.get_rect(center=(240, 280 + y_offset)))
 			surface.blit(msg_surface_jp, msg_surface_jp.get_rect(center=(240, 310 + y_offset)))
 
-# --- Impedance Results Scene ---
-class ImpedanceResultsScene(Scene):
+# --- Trainer Scene ---
+class TrainerScene(Scene):
 	def __init__(self, app):
 		super().__init__(app)
-		self.font_en = pygame.font.Font(notoFont, 16)
-		self.font_jp = pygame.font.Font(notoFont, 14)
-		self.font_large = pygame.font.Font(notoFont, 20)
-		
-		# Color names mapping - use canonical list from ABMI_Utils
-		self.color_names = [name.title() for name in ABMI_Utils.CABLE_COLORS]
-		
-		# Results will be set when switching to this scene
-		self.results = []
+		self.font = pygame.font.Font(notoFont, 28)
+		self.buttons = []
+
+		screen_width = app.render_w
+		screen_height = app.render_h
+
+		btn_width = int(screen_width / 3)
+		btn_height = int(screen_height / 3)
+
+		# Create three buttons stacked vertically on the left
+		for i in range(3):
+			rect = pygame.Rect(10, i * (btn_height + 10) + 10, btn_width - 20, btn_height - 20)
+			self.buttons.append({"rect": rect, "number": i + 1})
 
 	def handle_events(self, event):
-		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
-			# Go back to main menu or next scene
-			pass  # Add navigation logic as needed
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					print(f"Button {btn['number']} clicked!")
 
 	def update(self):
 		pass
 
 	def draw(self, surface):
 		surface.fill(white)
-		
-		# Get results from main app
-		results = self.app.impedance_results
-		
-		# Title
-		title_en = "Results"
-		title_jp = "結果"
-		title_surface_en = self.font_large.render(title_en, True, black)
-		title_surface_jp = self.font_large.render(title_jp, True, black)
-		
-		title_rect_en = title_surface_en.get_rect(center=(220, 35))
-		surface.blit(title_surface_en, title_rect_en)
-		
-		# Japanese title to the right of English
-		title_rect_jp = title_surface_jp.get_rect(center=(300, 35))
-		surface.blit(title_surface_jp, title_rect_jp)
-		
-		# Column headers
-		header_y = 55
-		col1_x = 50   # Cable color name
-		col2_x = 180  # Impedance value
-		col3_x = 320  # Pass/Fail
-		
-		# Headers
-		header_font = pygame.font.Font(notoFont, 14)
-		header1 = header_font.render("Cable", True, black)
-		header2 = header_font.render("Impedance (kΩ)", True, black)
-		header3 = header_font.render("Status", True, black)
-		
-		surface.blit(header1, (col1_x, header_y))
-		surface.blit(header2, (col2_x, header_y))
-		surface.blit(header3, (col3_x, header_y))
-		
-		# Draw results for each channel
-		row_height = 22
-		start_y = header_y + 20
-		
-		for i, (channel, impedance) in enumerate(results):
-			row_y = start_y + (i * row_height)
-			
-			# Skip if we don't have results for this channel
-			if i >= len(self.color_names):
-				break
-			
-			# Column 1: Cable color name
-			color_name = self.color_names[i]
-			color_surface = self.font_en.render(color_name, True, black)
-			surface.blit(color_surface, (col1_x, row_y))
-			
-			# Column 2: Impedance value with color coding
-			if not np.isnan(impedance):
-				impedance_text = f"{impedance:.1f}"
-				
-				# Color coding based on impedance value
-				if impedance < 50:
-					value_color = green
-				elif impedance < 100:
-					value_color = warning_orange
-				else:
-					value_color = red
-					
-				impedance_surface = self.font_en.render(impedance_text, True, value_color)
-				surface.blit(impedance_surface, (col2_x, row_y))
-			else:
-				# Handle NaN values
-				impedance_surface = self.font_en.render("N/A", True, black)
-				surface.blit(impedance_surface, (col2_x, row_y))
-			
-			# Column 3: Pass/Fail status
-			if not np.isnan(impedance):
-				if impedance < 100:
-					status_en = "PASS"
-					status_jp = "合格"
-					status_color = green
-				else:
-					status_en = "FAIL"
-					status_jp = "不合格"
-					status_color = red
-			else:
-				status_en = "N/A"
-				status_jp = "N/A"
-				status_color = black
-			
-			# Draw English status
-			status_surface_en = self.font_en.render(status_en, True, status_color)
-			surface.blit(status_surface_en, (col3_x, row_y))
-			
-			# Draw Japanese status to the right
-			status_surface_jp = self.font_jp.render(status_jp, True, status_color)
-			surface.blit(status_surface_jp, (col3_x + 60, row_y))
-		
-		# Check if any status is FAIL and show warning at bottom
-		has_fail = False
-		for channel, impedance in results:
-			if not np.isnan(impedance) and impedance >= 100:
-				has_fail = True
-				break
-		
-		if has_fail:
-			# Warning message at bottom
-			warning_en = "Cable connection is weak, please fix and restart"
-			warning_jp = "ケーブル接続が弱いです、修正して再起動してください"
-			warning_surface_en = self.font_en.render(warning_en, True, red)
-			warning_surface_jp = self.font_jp.render(warning_jp, True, red)
-			
-			surface.blit(warning_surface_en, (50, 260))
-			surface.blit(warning_surface_jp, (50, 280))
+		for btn in self.buttons:
+			# Draw outline
+			pygame.draw.rect(surface, black, btn["rect"], 3)
+			# Draw number centered
+			num_surface = self.font.render(str(btn["number"]), True, black)
+			num_rect = num_surface.get_rect(center=btn["rect"].center)
+			surface.blit(num_surface, num_rect)
 
 # --- Main App Class ---
 class BMITrainer:
@@ -679,7 +551,7 @@ class BMITrainer:
 		self.running = True
 
 		# Developer mode flag - set to True to enable developer overrides
-		self.developer_mode = False
+		self.developer_mode = True
 
 		# global BCIBoard object
 		self.bciboard = None
@@ -693,8 +565,8 @@ class BMITrainer:
 			"welcome": WelcomeScene(self),
 			"wifi_check": WiFiCheckScene(self),
 			"bci_connect": BCIConnectScene(self),
-			"impedance_results": ImpedanceResultsScene(self),
 			"impedance_results_single": ImpedanceResultsSingleScene(self),
+			"trainer": TrainerScene(self)
 		}
 		
 		# Add individual cable check scenes from canonical list in ABMI_Utils
