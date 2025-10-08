@@ -298,6 +298,11 @@ class ImpedanceCheckSingleScene(Scene):
 	def handle_events(self, event):
 		pass  # no interaction during checking
 
+	def reset(self):
+		self.status = "waiting"
+		self.result = None
+		self.dev_sim_start_time = None
+
 	def start_impedance_check(self):
 		self.status = "checking"
 		if self.app.developer_mode:
@@ -343,8 +348,19 @@ class ImpedanceCheckSingleScene(Scene):
 				if elapsed >= self.dev_sim_duration:
 					self.status = "done"
 		elif self.status == "done":
-			# Store result and move to single results scene
+			# Store result
 			self.app.current_cable_result = (self.cable_index, self.cable_name, self.result)
+
+			# Preload and prepare results scene before showing
+			results_scene = self.app.scenes["impedance_results_single"]
+			results_scene.cable_index = self.cable_index
+			results_scene.cable_name = self.cable_name
+			results_scene.impedance_value = self.result
+			results_scene.retry_needed = (
+				np.isnan(self.result) or self.result >= 100
+			)
+
+			# Now switch after it's fully ready
 			self.app.switch_scene("impedance_results_single")
 
 	def draw(self, surface):
@@ -499,53 +515,86 @@ class ImpedanceResultsSingleScene(Scene):
 class TrainerScene(Scene):
 	def __init__(self, app):
 		super().__init__(app)
-		self.font = pygame.font.Font(notoFont, 28)
+		self.app = app
 
-		# Raw window size
-		screen_width = app.render_w
-		screen_height = app.render_h
+		# --- Buttons container ---
+		self.buttons = []
 
-		# Fixed button sizes
-		btn_width = 150
-		btn_height = 90
+		# Example buttons (each with its own font size)
+		self.add_button("Train BMI", 10, 15, 200, 90, self.train_bmi, font_size=28)
+		self.add_button("Delete Recent", 10, 115, 200, 90, self.delete_recent, font_size=24)
+		self.add_button("Check Impedance", 10, 215, 200, 90, self.check_impedance, font_size=20)
 
-		# --- Button 1 ---
-		self.button1 = {
-			"rect": pygame.Rect(10, 15, btn_width, btn_height),
-			"text": "Button 1"
+	# ----------------------------------------
+	# Helper to add a button
+	# ----------------------------------------
+	def add_button(self, text, x, y, w, h, callback, font_size=28):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size)
 		}
+		self.buttons.append(button)
 
-		# --- Button 2 ---
-		self.button2 = {
-			"rect": pygame.Rect(10, 115, btn_width, btn_height),
-			"text": "Button 2"
-		}
+	# ----------------------------------------
+	# Example button actions
+	# ----------------------------------------
+	def train_bmi(self):
+		print("Train BMI clicked!")
 
-		# --- Button 3 ---
-		self.button3 = {
-			"rect": pygame.Rect(10, 215, btn_width, btn_height),
-			"text": "Button 3"
-		}
+	def delete_recent(self):
+		print("Delete Recent clicked!")
 
-		self.buttons = [self.button1, self.button2, self.button3]
+	def check_impedance(self):
+		print("Restarting impedance check sequence...")
 
+		# --- Reset impedance data ---
+		self.app.impedance_results = []
+		self.app.current_cable_result = None
+
+		# --- Reset BCIBoard impedance state if available ---
+		if self.app.bciboard:
+			try:
+				self.app.bciboard.reset_impedance_state()
+			except AttributeError:
+				print("BCIBoard has no reset_impedance_state(), skipping reset")
+
+		# --- Reset each ImpedanceCheckSingleScene state ---
+		for scene_name, scene_obj in self.app.scenes.items():
+			if isinstance(scene_obj, ImpedanceCheckSingleScene):
+				scene_obj.reset()
+
+		# --- Jump to first impedance check scene ---
+		first_cable = ABMI_Utils.CABLE_COLORS[0]
+		scene_name = f"impedance_check_{first_cable}"
+		if scene_name in self.app.scenes:
+			self.app.switch_scene(scene_name)
+			print(f"Switched to {scene_name}")
+		else:
+			print(f"Scene '{scene_name}' not found!")
+
+	# ----------------------------------------
+	# Event handler
+	# ----------------------------------------
 	def handle_events(self, event):
 		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
 			mx, my = event.pos
 			for btn in self.buttons:
 				if btn["rect"].collidepoint(mx, my):
-					print(f"{btn['text']} clicked!")
+					btn["callback"]()
 
+	# ----------------------------------------
+	# Update & Draw
+	# ----------------------------------------
 	def update(self):
 		pass
 
 	def draw(self, surface):
 		surface.fill(white)
 		for btn in self.buttons:
-			# Draw outline
 			pygame.draw.rect(surface, black, btn["rect"], 3)
-			# Draw text centered
-			text_surface = self.font.render(btn["text"], True, black)
+			text_surface = btn["font"].render(btn["text"], True, black)
 			text_rect = text_surface.get_rect(center=btn["rect"].center)
 			surface.blit(text_surface, text_rect)
 
