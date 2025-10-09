@@ -19,7 +19,7 @@ blue = (23,100,255)
 dark_blue = (21,19,186)
 cool_blue = (74,198,255)
 light_blue = (54,106,217)
-warning_orange = (255,190,120)
+warning_orange = (214,162,17)
 soft_red = (250,61,55)
 red = (200,0,0)
 black = (0,0,0)
@@ -520,10 +520,16 @@ class TrainerScene(Scene):
 		# --- Buttons container ---
 		self.buttons = []
 
-		# Example buttons (each with its own font size)
+		# Button Creation
 		self.add_button("Train BMI", 10, 15, 200, 90, self.train_bmi, font_size=28)
 		self.add_button("Delete Recent", 10, 115, 200, 90, self.delete_recent, font_size=24)
 		self.add_button("Check Impedance", 10, 215, 200, 90, self.check_impedance, font_size=20)
+		self.add_button("Left", 220, 215, 80, 90, self.audio_left, font_size=20)
+		self.add_button("Center", 305, 215, 80, 90, self.audio_center, font_size=20)
+		self.add_button("Right", 390, 215, 80, 90, self.audio_right, font_size=20)
+
+		#Font for labels like "Test Audio"
+		self.label_font = pygame.font.Font(notoFont, 24)
 
 	# ----------------------------------------
 	# Helper to add a button
@@ -570,9 +576,20 @@ class TrainerScene(Scene):
 		scene_name = f"impedance_check_{first_cable}"
 		if scene_name in self.app.scenes:
 			self.app.switch_scene(scene_name)
-			print(f"Switched to {scene_name}")
 		else:
 			print(f"Scene '{scene_name}' not found!")
+
+	def audio_left(self):
+		print("Audio Left clicked!")
+		ABMI_Utils.play_single_sound('Sounds/beep_left.wav')
+
+	def audio_center(self):
+		print("Audio Center clicked!")
+		ABMI_Utils.play_single_sound('Sounds/beep_center.wav')
+
+	def audio_right(self):
+		print("Audio Right clicked!")
+		ABMI_Utils.play_single_sound('Sounds/beep_right.wav')
 
 	# ----------------------------------------
 	# Event handler
@@ -592,6 +609,13 @@ class TrainerScene(Scene):
 
 	def draw(self, surface):
 		surface.fill(white)
+
+		# --- Draw "Test Audio" label ---
+		label_surface = self.label_font.render("Test Audio", True, black)
+		label_rect = label_surface.get_rect(center=(345, 195))  # center above audio buttons
+		surface.blit(label_surface, label_rect)
+
+		# --- Draw buttons ---
 		for btn in self.buttons:
 			pygame.draw.rect(surface, black, btn["rect"], 3)
 			text_surface = btn["font"].render(btn["text"], True, black)
