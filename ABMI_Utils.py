@@ -15,6 +15,8 @@ import time
 import threading
 from pyOpenBCI import OpenBCICyton
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
+import os
+import pygame
 
 # --- Constants ---
 SERIES_R = 2200.0			# Series resistance (2.2 kΩ)
@@ -214,6 +216,23 @@ def send_leadoff(board, ch, p_apply, n_apply):
 	cmd = f"z{ch}{p_apply}{n_apply}Z"
 	board.config_board(cmd)
 	time.sleep(0.02)
+
+def play_single_sound(filepath="left.wav"):
+	"""
+	Play a .wav file asynchronously (non-blocking) using pygame.
+	"""
+	if not os.path.exists(filepath):
+		print(f"[Sound] File not found: {filepath}")
+		return
+
+	def _play():
+		try:
+			sound = pygame.mixer.Sound(filepath)
+			sound.play()  # non-blocking
+		except Exception as e:
+			print(f"[Sound] Failed to play sound: {e}")
+
+	threading.Thread(target=_play, daemon=True).start()
 
 '''
 def check_impedance(channels=[1,2,3,4,5,6,7,8]):
