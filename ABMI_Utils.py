@@ -16,6 +16,7 @@ import threading
 from pyOpenBCI import OpenBCICyton
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
 import os
+import random
 import pygame
 
 # --- Constants ---
@@ -217,7 +218,7 @@ def send_leadoff(board, ch, p_apply, n_apply):
 	board.config_board(cmd)
 	time.sleep(0.02)
 
-def play_single_sound(filepath="left.wav"):
+def play_single_sound(filepath="beep_left.wav"):
 	"""
 	Play a .wav file asynchronously (non-blocking) using pygame.
 	"""
@@ -234,78 +235,25 @@ def play_single_sound(filepath="left.wav"):
 
 	threading.Thread(target=_play, daemon=True).start()
 
-'''
-def check_impedance(channels=[1,2,3,4,5,6,7,8]):
+def getUserID(filepath="BMI Trainer Data/UserID.txt"):
 	"""
-	Check electrode impedance for selected channels.
-	Returns a list of (channel, impedance in kΩ).
+	Check if the given file exists. If not, create it and save a 9-digit UserID.
+	Returns the UserID (as a string).
 	"""
-	port = "/dev/cu.usbserial-DP04WG3L"		# Update to match your device
-	if not port:
-		raise RuntimeError("Cyton serial port not found.")
-
-	params = BrainFlowInputParams()
-	params.serial_port = port
-	board_id = BoardIds.CYTON_BOARD.value
-	fs = BoardShim.get_sampling_rate(board_id)
-
-	board = BoardShim(board_id, params)
-
-	try:
-		board.prepare_session()
-		board.start_stream()
-
-		z_list = []
-
-		for ch in channels:
-			set_ads_to_impedance_on(board, ch)
-
-			# Enable lead-off (N-side ON)
-			send_leadoff(board, ch, 0, 1)
-
-			# Wait for settling
-			time.sleep(SETTLE_SEC)
-
-			# Clear buffer
-			board.get_board_data()
-
-			# Record data
-			time.sleep(MEAS_SEC+0.2)
-			data = board.get_board_data()
-
-			# Extract channel data
-			eeg_idxs = BoardShim.get_eeg_channels(board_id)
-			row = eeg_idxs[ch - 1]
-
-			x_uV = data[row, :]
-			x_bp = bandpass_apply(x_uV, fs)
-			uVrms = take_recent_1s(x_bp, fs)
-
-			# Compute impedance in kΩ
-			z_kohm = (calc_impedance_from_vrms(uVrms) / 1000.0) if np.isfinite(uVrms) else float('nan')
-			print(f"CH{ch}({CABLE_COLORS[ch - 1]}): {z_kohm:.2f} kΩ")
-
-			z_list.append((ch, z_kohm))
-
-			# Disable lead-off
-			send_leadoff(board, ch, 0, 0)
-
-		board.stop_stream()
-		reset_to_defaults(board)
-		return z_list
-
-	finally:
-		try:
-			board.release_session()
-		except Exception:
-			pass
-'''
-
-'''
-if __name__ == "__main__":
-	impedance_list = check_impedance(channels=[1,2,3,4,5,6,7,8])
-	print("\n=== Summary ===")
-	for ch, z in impedance_list:
-		color = CABLE_COLORS[ch - 1] if 1 <= ch <= len(CABLE_COLORS) else 'black'
-		print(f"CH{ch}({color}): {z:.2f} kΩ")
-'''
+	if not os.path.exists(filepath):
+		user_id = str(random.randint(100000000, 999999999))
+		with open(filepath, "w") as f:
+			f.write(user_id)
+		print(f"[UserID] Created new file '{filepath}' with ID {user_id}")
+	else:
+		with open(filepath, "r") as f:
+			user_id = f.read().strip()
+		if not user_id.isdigit() or len(user_id) != 9:
+			user_id = str(random.randint(100000000, 999999999))
+			with open(filepath, "w") as f:
+				f.write(user_id)
+			print(f"[UserID] Invalid file content, generated new ID {user_id}")
+		else:
+			print(f"[UserID] Found existing ID {user_id}")
+	
+	return user_id
