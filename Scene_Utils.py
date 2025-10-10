@@ -21,11 +21,13 @@ cool_blue = (74,198,255)
 light_blue = (54,106,217)
 warning_orange = (214,162,17)
 soft_red = (250,61,55)
+light_red = (255,143,133)
 red = (200,0,0)
 black = (0,0,0)
 light_green = (82,255,128)
 light_yellow = (220,200,80)
 green = (0,200,0)
+soft_green = (152,250,132)
 mint_green = (54,217,62)
 dark_green = (2,140,0)
 dark_yellow = (201,185,0)
@@ -516,36 +518,31 @@ class TrainerScene(Scene):
 	def __init__(self, app):
 		super().__init__(app)
 		self.app = app
-
-		# --- Buttons container ---
+		self.user_id = ABMI_Utils.getUserID("BMI Trainer Data/UserID.txt")
 		self.buttons = []
 
 		# Button Creation
-		self.add_button("Train BMI", 10, 15, 200, 90, self.train_bmi, font_size=28)
-		self.add_button("Delete Recent", 10, 115, 200, 90, self.delete_recent, font_size=24)
-		self.add_button("Check Impedance", 10, 215, 200, 90, self.check_impedance, font_size=20)
-		self.add_button("Left", 220, 215, 80, 90, self.audio_left, font_size=20)
-		self.add_button("Center", 305, 215, 80, 90, self.audio_center, font_size=20)
-		self.add_button("Right", 390, 215, 80, 90, self.audio_right, font_size=20)
+		self.add_button("Train BMI", 10, 15, 200, 90, self.train_bmi, font_size=28, color=soft_green)
+		self.add_button("Delete Recent", 10, 115, 200, 90, self.delete_recent, font_size=24, color=light_red)
+		self.add_button("Check Impedance", 10, 215, 200, 90, self.check_impedance, font_size=20, color=cool_blue)
+		self.add_button("Left", 220, 215, 80, 90, self.audio_left, font_size=20, color=white)
+		self.add_button("Center", 305, 215, 80, 90, self.audio_center, font_size=20, color=white)
+		self.add_button("Right", 390, 215, 80, 90, self.audio_right, font_size=20, color=white)
 
 		#Font for labels like "Test Audio"
 		self.label_font = pygame.font.Font(notoFont, 24)
+		self.userid_font = pygame.font.Font(notoFont, 22)
 
-	# ----------------------------------------
-	# Helper to add a button
-	# ----------------------------------------
-	def add_button(self, text, x, y, w, h, callback, font_size=28):
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
 		button = {
 			"rect": pygame.Rect(x, y, w, h),
 			"text": text,
 			"callback": callback,
-			"font": pygame.font.Font(notoFont, font_size)
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
 		}
 		self.buttons.append(button)
 
-	# ----------------------------------------
-	# Example button actions
-	# ----------------------------------------
 	def train_bmi(self):
 		print("Train BMI clicked!")
 
@@ -591,9 +588,6 @@ class TrainerScene(Scene):
 		print("Audio Right clicked!")
 		ABMI_Utils.play_single_sound('Sounds/beep_right.wav')
 
-	# ----------------------------------------
-	# Event handler
-	# ----------------------------------------
 	def handle_events(self, event):
 		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
 			mx, my = event.pos
@@ -601,9 +595,6 @@ class TrainerScene(Scene):
 				if btn["rect"].collidepoint(mx, my):
 					btn["callback"]()
 
-	# ----------------------------------------
-	# Update & Draw
-	# ----------------------------------------
 	def update(self):
 		pass
 
@@ -614,10 +605,17 @@ class TrainerScene(Scene):
 		label_surface = self.label_font.render("Test Audio", True, black)
 		label_rect = label_surface.get_rect(center=(345, 195))  # center above audio buttons
 		surface.blit(label_surface, label_rect)
+  
+  		# --- Draw User ID (top right) ---
+		user_text = f"User ID: {self.user_id}"
+		user_surface = self.userid_font.render(user_text, True, black)
+		user_rect = user_surface.get_rect(topright=(surface.get_width() - 30, 10))
+		surface.blit(user_surface, user_rect)
 
 		# --- Draw buttons ---
 		for btn in self.buttons:
-			pygame.draw.rect(surface, black, btn["rect"], 3)
+			pygame.draw.rect(surface, btn["color"], btn["rect"])
+			pygame.draw.rect(surface, black, btn["rect"], 3)  # border
 			text_surface = btn["font"].render(btn["text"], True, black)
 			text_rect = text_surface.get_rect(center=btn["rect"].center)
 			surface.blit(text_surface, text_rect)
