@@ -209,14 +209,17 @@ class BCIConnectScene(Scene):
 			threading.Thread(target=self._try_connect, daemon=True).start()
 
 		if self.status == "connected" and current_time - self.connected_time >= 1:
-			# Automatically move to first cable check (Gray)
-			self.app.switch_scene("impedance_check_gray")
+			if self.app.developer_mode:
+				self.app.switch_scene("trainer") #SKIP IMPEDANCE
+			else:
+				self.app.switch_scene("impedance_check_gray")# Automatically move to first cable check (Gray)
+			
 
 
 	def _try_connect(self):
 		
 		# Developer mode override - skip actual BCI connection
-		if self.app.developer_mode:
+		if self.app.developer_mode and self.app.dev_skip_bci_connect:
 			self.status = "connected"
 			self.connected_time = time.time()
 			self.retry_count = 0
@@ -544,7 +547,8 @@ class TrainerScene(Scene):
 		self.buttons.append(button)
 
 	def train_bmi(self):
-		print("Train BMI clicked!")
+		print("Train BMI clicked! Switching to CollectDataSingleScene...")
+		self.app.switch_scene("collect_data_single")
 
 	def delete_recent(self):
 		print("Delete Recent clicked!")
@@ -620,6 +624,98 @@ class TrainerScene(Scene):
 			text_rect = text_surface.get_rect(center=btn["rect"].center)
 			surface.blit(text_surface, text_rect)
 
+# --- Single Collection ---
+class CollectDataSingleScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.app = app
+		self.font_en = pygame.font.Font(notoFont, 20)
+		self.font_jp = pygame.font.Font(notoFont, 20)
+		self.message_en = "Collecting training data, in case of problem, please press Cancel..."
+		self.message_jp = "データ収集中。問題があればキャンセルを押してください..."
+		self.buttons = []
+  
+		# Spinner setup
+		self.spinner_angle = 0
+		self.spinner_radius = 20
+		self.spinner_center = (480 - 50, 320 - 50)  # bottom right
+		self.spinner_speed = -2  # degrees per frame
+
+		# --- Cancel Button ---
+		self.add_button("Cancel", 165, 220, 150, 70, self.cancel_action, font_size=26, color=light_red)
+  
+		# --- EEG check ---
+		self.checked_eeg = False
+
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
+		}
+		self.buttons.append(button)
+
+	def cancel_action(self):
+		print("Cancel pressed — returning to Trainer Scene")
+		self.app.switch_scene("trainer")
+
+	def handle_events(self, event):
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					btn["callback"]()
+     
+	def check_eeg_ready(self):
+		bciboard = self.app.bciboard
+		if bciboard is not None:
+			print("[EEG Check] Board initialized and ready")
+			self.eeg_ready = True
+		else:
+			print("[EEG Check] Board not initialized — not ready")
+			self.eeg_ready = False
+
+	def update(self):
+		# Rotate spinner continuously
+		self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+  
+		# --- Check EEG once when scene becomes active ---
+		if not self.checked_eeg:
+			self.checked_eeg = True
+			if self.app.bciboard is None:
+				print("[CollectDataSingleScene] EEG not ready!")
+			else:
+				print("[CollectDataSingleScene] EEG ready!")
+
+	def draw(self, surface):
+		surface.fill(white)
+
+		# --- Messages (wrapped) ---
+		max_width = surface.get_width() - 120
+		start_y = 40
+
+		y_after_en = draw_text_wrapped(surface, self.message_en, self.font_en, black, 50, start_y, max_width, 8, "en")
+		draw_text_wrapped(surface, self.message_jp, self.font_jp, black, 50, start_y + y_after_en + 5, max_width, 8, "jp")
+
+		# --- Buttons ---
+		for btn in self.buttons:
+			pygame.draw.rect(surface, btn["color"], btn["rect"])
+			pygame.draw.rect(surface, black, btn["rect"], 3)
+			text_surface = btn["font"].render(btn["text"], True, black)
+			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			surface.blit(text_surface, text_rect)
+   
+		# Draw spinner
+		num_lines = 12
+		for i in range(num_lines):
+			angle_deg = (360 / num_lines) * i + self.spinner_angle
+			angle_rad = math.radians(angle_deg)
+			x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+			y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+			pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
 # --- Main App Class ---
 class BMITrainer:
 	def __init__(self):
@@ -637,10 +733,10 @@ class BMITrainer:
 		self.clock = pygame.time.Clock()
 		self.running = True
 
-		# Developer mode flag - set to True to enable developer overrides
+		# Developer mode flags
 		self.developer_mode = True
-		# Scene to start in when developer mode is active
-		self.dev_start_scene = "trainer"
+		self.dev_start_scene = "bci_connect"
+		self.dev_skip_bci_connect = False
 
 		# global BCIBoard object
 		self.bciboard = None
@@ -655,7 +751,8 @@ class BMITrainer:
 			"wifi_check": WiFiCheckScene(self),
 			"bci_connect": BCIConnectScene(self),
 			"impedance_results_single": ImpedanceResultsSingleScene(self),
-			"trainer": TrainerScene(self)
+			"trainer": TrainerScene(self),
+			"collect_data_single": CollectDataSingleScene(self)
 		}
 		
 		# Add individual cable check scenes from canonical list in ABMI_Utils
