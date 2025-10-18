@@ -14,7 +14,7 @@ import serial.tools.list_ports
 import time
 import threading
 from pyOpenBCI import OpenBCICyton
-from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
+from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds, BrainFlowError
 import os
 import random
 import pygame
@@ -49,6 +49,10 @@ class BCIBoard:
 		self.board_id = BoardIds.CYTON_BOARD.value
 		self.fs = BoardShim.get_sampling_rate(self.board_id)
 		self.channels = list(range(1, 9))  # default 8 channels
+		self.connected = False
+		self.streaming = False
+		self._last_data_time = None
+		self._stream_thread = None
 
 	def connect(self):
 		BoardShim.disable_board_logger()
@@ -60,6 +64,9 @@ class BCIBoard:
 			self.board.prepare_session()
 			self.board.start_stream()
 			print(f"Connected to OpenBCI board at {self.port}")
+			self.connected = True
+			self._last_data_time = None
+			self.streaming = False
 			return True
 
 		except Exception as e:
@@ -69,6 +76,9 @@ class BCIBoard:
 			except Exception:
 				pass
 			self.board = None
+			self.connected = False
+			self.streaming = False
+			self._last_data_time = None
 			return False
 
 	def disconnect(self):
@@ -80,11 +90,62 @@ class BCIBoard:
 			except Exception:
 				pass
 			self.board = None
+		self.connected = False
+		self.streaming = False
+		self._last_data_time = None
+		self._stream_thread = None
+
+	def _refresh_stream_state(self, stale_timeout=1.5, probe=False):
+		if not self.streaming:
+			return False
+
+		if not self.board:
+			self.streaming = False
+			self.connected = False
+			self._last_data_time = None
+			return False
+
+		if probe:
+			try:
+				data = self.board.get_current_board_data(1)
+				if data.size > 0:
+					self._last_data_time = time.time()
+			except BrainFlowError as e:
+				print(f"[BCIBoard] Streaming probe failed: {e}")
+				self.streaming = False
+				self.connected = False
+				self._last_data_time = None
+				return False
+			except Exception as e:
+				print(f"[BCIBoard] Unexpected streaming probe error: {e}")
+				self.streaming = False
+				self.connected = False
+				self._last_data_time = None
+				return False
+
+		if self._last_data_time is None:
+			self._last_data_time = time.time()
+
+		if time.time() - self._last_data_time > stale_timeout:
+			print(f"[BCIBoard] No data received for {stale_timeout} s; marking board disconnected.")
+			self.streaming = False
+			self.connected = False
+			self._last_data_time = None
+			return False
+
+		return True
 
 	def stream(self, callback=None):
-		if not self.board:
+		if not self.board or not self.connected:
 			print("[BCIBoard] Cannot start streaming: board not connected")
-			return
+			return False
+
+		if self.streaming:
+			print("[BCIBoard] Streaming already in progress")
+			return True
+
+		self.streaming = True
+		self._last_data_time = None
 
 		eeg_idxs = BoardShim.get_eeg_channels(self.board_id)
 		try:
@@ -93,23 +154,65 @@ class BCIBoard:
 			ts_idx = None
 
 		def _worker():
-			while True:
-				data = self.board.get_board_data()
-				if data.size > 0 and callback:
-					num_samples = data.shape[1]
-					for i in range(num_samples):
-						sample = {
-							"timestamp": float(data[ts_idx, i]) if ts_idx is not None else None,
-							"eeg": data[eeg_idxs, i]
-						}
-						try:
-							callback(sample)
-						except Exception:
-							pass
+			stale_timeout = 1.5
+			while self.streaming and self.board:
+				if not self._refresh_stream_state(stale_timeout=stale_timeout):
+					break
+
+				try:
+					data = self.board.get_board_data()
+				except BrainFlowError as e:
+					print(f"[BCIBoard] Stream error: {e}")
+					self.connected = False
+					self.streaming = False
+					self._last_data_time = None
+					break
+				except Exception as e:
+					print(f"[BCIBoard] Unexpected stream error: {e}")
+					self.connected = False
+					self.streaming = False
+					self._last_data_time = None
+					break
+
+				if data.size > 0:
+					self._last_data_time = time.time()
+					if callback:
+						num_samples = data.shape[1]
+						for i in range(num_samples):
+							sample = {
+								"timestamp": float(data[ts_idx, i]) if ts_idx is not None else None,
+								"eeg": data[eeg_idxs, i]
+							}
+							try:
+								callback(sample)
+							except Exception:
+								pass
+				else:
+					time.sleep(0.05)
+					continue
+
 				time.sleep(0.01)
 
-		threading.Thread(target=_worker, daemon=True).start()
+			self.streaming = False
+			if not self.connected:
+				self._last_data_time = None
+			self._stream_thread = None
+
+		self._stream_thread = threading.Thread(target=_worker, daemon=True)
+		self._stream_thread.start()
 		print(f"[BCIBoard] Started streaming from board at {self.port}")
+		return True
+
+	def stop_stream(self, wait=True, clear_last_time=True):
+		"""Stop the worker thread and optionally clear timing state while staying connected."""
+		self.streaming = False
+		thread = self._stream_thread
+		if thread and thread.is_alive():
+			if wait:
+				thread.join(timeout=1.0)
+		self._stream_thread = None
+		if clear_last_time:
+			self._last_data_time = None
 
 	def check_impedance(self, channels=None):
 		channels = channels or self.channels
@@ -218,6 +321,8 @@ def send_leadoff(board, ch, p_apply, n_apply):
 	board.config_board(cmd)
 	time.sleep(0.02)
 
+# ---- Mark implemented functions ---- #
+
 def play_single_sound(filepath="beep_left.wav"):
 	"""
 	Play a .wav file asynchronously (non-blocking) using pygame.
@@ -234,6 +339,41 @@ def play_single_sound(filepath="beep_left.wav"):
 			print(f"[Sound] Failed to play sound: {e}")
 
 	threading.Thread(target=_play, daemon=True).start()
+
+def createSessionFolder(user_id, timestamp, base_path="BMI Trainer Data/"):
+	'''Create a session folder named '<user_id>-YYYY-MM-DD-HH-MM' inside base_path.'''
+	if not isinstance(user_id, str):
+		user_id = str(user_id)
+	if len(user_id) != 9 or not user_id.isdigit():
+		raise ValueError('user_id must be a 9-digit string')
+
+	if hasattr(timestamp, 'strftime'):
+		timestamp_str = timestamp.strftime('%Y-%m-%d-%H-%M')
+	else:
+		timestamp_str = str(timestamp)
+
+	folder_name = f"{user_id}-{timestamp_str}"
+	base_dir = os.path.abspath(base_path)
+	os.makedirs(base_dir, exist_ok=True)
+	full_path = os.path.join(base_dir, folder_name)
+	if not os.path.isdir(full_path):
+		os.makedirs(full_path)
+	return full_path
+
+def deleteEmptyFolders(base_path="BMI Trainer Data/"):
+	"""Remove subdirectories under base_path that contain no files."""
+	base_dir = os.path.abspath(base_path)
+	if not os.path.isdir(base_dir):
+		return
+
+	for entry in os.scandir(base_dir):
+		if not entry.is_dir():
+			continue
+		try:
+			if not any(Path(entry.path).iterdir()):
+				Path(entry.path).rmdir()
+		except Exception:
+			pass
 
 def getUserID(filepath="BMI Trainer Data/UserID.txt"):
 	"""
