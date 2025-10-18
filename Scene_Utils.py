@@ -629,6 +629,7 @@ class CollectDataSingleScene(Scene):
 		self.message_en = "Collecting training data, in case of problem, please press Cancel..."
 		self.message_jp = "データ収集中。問題があればキャンセルを押してください..."
 		self.buttons = []
+		self.recording = False
   
 		# Spinner setup
 		self.spinner_angle = 0
@@ -678,6 +679,10 @@ class CollectDataSingleScene(Scene):
 
 		if not board.streaming:
 			board.stream()
+   
+		if not board.recording:
+			#call recording function
+			True
 
 	def draw(self, surface):
 		surface.fill(white)
@@ -705,7 +710,6 @@ class CollectDataSingleScene(Scene):
 			x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
 			y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
 			pygame.draw.circle(surface, black, (int(x), int(y)), 3)
-
 
 # --- Main App Class ---
 class BMITrainer:
