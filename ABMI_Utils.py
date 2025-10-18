@@ -13,6 +13,7 @@ import serial.tools.list_ports
 import time
 import threading
 import os
+import csv
 import random
 import pygame
 import shutil
@@ -28,6 +29,7 @@ I_DRIVE = 6.0e-9			# Lead-off drive current (6 nA default)
 MEAS_SEC = 2.0				# Measurement duration in seconds
 SETTLE_SEC = 2.0			# Settling time after switching lead-off
 BAND = (5, 50)				# Bandpass filter range (Hz)
+ISI = 0.35 					# Inter-Stimulus Interval in seconds
 
 # Hand-coded color table for cable impedance display
 # Each color is defined as RGB tuple (0-255 range)
@@ -56,6 +58,15 @@ class BCIBoard:
 		self.streaming = False
 		self._last_data_time = None
 		self._stream_thread = None
+  
+		#Recording Vars
+		self.recording = False
+		self.stimulus_sound = None
+		self.sequence_id = None
+		self.eeg_sample = []
+		self._record_thread = None
+		self._record_stop_event = None
+		self._record_file_path = None
 
 	def connect(self):
 		BoardShim.disable_board_logger()
@@ -179,17 +190,16 @@ class BCIBoard:
 
 				if data.size > 0:
 					self._last_data_time = time.time()
-					if callback:
-						num_samples = data.shape[1]
-						for i in range(num_samples):
-							sample = {
-								"timestamp": float(data[ts_idx, i]) if ts_idx is not None else None,
-								"eeg": data[eeg_idxs, i]
-							}
-							try:
-								callback(sample)
-							except Exception:
-								pass
+					num_samples = data.shape[1]
+					for i in range(num_samples):
+						sample = {
+							"timestamp": float(data[ts_idx, i]) if ts_idx is not None else None,
+							"eeg": data[eeg_idxs, i]
+						}
+						try:
+							self.eeg_sample = sample
+						except Exception:
+							pass
 				else:
 					time.sleep(0.05)
 					continue
@@ -216,6 +226,96 @@ class BCIBoard:
 		self._stream_thread = None
 		if clear_last_time:
 			self._last_data_time = None
+
+	def start_recording(self, folder_path, filename=None):
+		"""Start a recording worker that logs incoming EEG samples to CSV."""
+		if not folder_path:
+			raise ValueError('folder_path is required')
+
+		if self.recording:
+			print('[BCIBoard] Recording already in progress')
+			return False
+
+		folder = Path(folder_path).expanduser().resolve()
+		folder.mkdir(parents=True, exist_ok=True)
+
+		if filename:
+			file_path = folder / filename
+		else:
+			timestamp_label = time.strftime('%Y%m%d_%H%M%S')
+			file_path = folder / f'eeg_data_{timestamp_label}.csv'
+
+		header = ['Timestamp', 'Ch1', 'Ch2', 'Ch3', 'Ch4', 'Ch5', 'Ch6', 'Ch7', 'Ch8', 'Label', 'Seq']
+
+		stop_event = threading.Event()
+		self._record_stop_event = stop_event
+		self._record_file_path = str(file_path)
+
+		def _record_worker():
+			last_sample_ref = None
+			try:
+				with file_path.open('w', newline='') as csvfile:
+					writer = csv.writer(csvfile)
+					writer.writerow(header)
+					while not stop_event.is_set():
+						sample = self.eeg_sample
+						if not sample or sample is last_sample_ref:
+							time.sleep(0.001)
+							continue
+
+						last_sample_ref = sample
+						timestamp = sample.get('timestamp')
+						if timestamp is None:
+							timestamp = time.time()
+
+						eeg_values = sample.get('eeg')
+						if eeg_values is None:
+							time.sleep(0.001)
+							continue
+
+						row = [float(timestamp)]
+						eeg_array = np.asarray(eeg_values).flatten()
+						row.extend(float(val) for val in eeg_array[:8])
+
+						label = self.stimulus_sound if self.stimulus_sound is not None else ''
+						seq = self.sequence_id if self.sequence_id is not None else ''
+						row.append(label)
+						row.append(seq)
+
+						writer.writerow(row)
+						csvfile.flush()
+						time.sleep(0.001)
+			except Exception as e:
+				print(f'[BCIBoard] Recording error: {e}')
+			finally:
+				self.recording = False
+				self._record_thread = None
+				self._record_stop_event = None
+
+		self.recording = True
+		thread = threading.Thread(target=_record_worker, daemon=True)
+		self._record_thread = thread
+		thread.start()
+		print(f"[BCIBoard] Recording started: {file_path}")
+		return str(file_path)
+
+	def stop_recording(self, wait=True):
+		"""Signal the recording worker to stop and close resources."""
+		stop_event = self._record_stop_event
+		if stop_event:
+			stop_event.set()
+
+		self.recording = False
+
+		thread = self._record_thread
+		if thread and thread.is_alive():
+			if wait:
+				thread.join(timeout=2.0)
+
+		self._record_thread = None
+		self._record_stop_event = None
+		self._record_file_path = None
+		print('[BCIBoard] Recording stopped')
 
 	def check_impedance(self, channels=None):
 		channels = channels or self.channels
@@ -401,3 +501,26 @@ def getUserID(filepath="BMI Trainer Data/UserID.txt"):
 			print(f"[UserID] Found existing ID {user_id}")
 	
 	return user_id
+
+def generateSequence():
+    """
+    Generates non-repeating order of sounds to play (Left,Center,Right,Silent), and corresponding sequence id
+    """
+    
+    stimulation_sequence = []
+    sequence_ids = []
+    prev_stim = None
+    
+    #Modifiable
+    numSequences=10
+    playableIDs = [1,2,3,4]
+    
+    for set_idx in range(numSequences):
+        stim_order = random.sample(playableIDs, len(playableIDs))
+        while prev_stim is not None and stim_order[0] == prev_stim:
+            stim_order = random.sample(playableIDs, len(playableIDs))
+        prev_stim = stim_order[-1]
+        stimulation_sequence.extend(stim_order)
+        sequence_ids.extend([set_idx + 1] * len(stim_order))
+        
+    return stimulation_sequence, sequence_ids
