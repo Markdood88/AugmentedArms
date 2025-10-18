@@ -8,16 +8,19 @@ All copyright and intellectual property belongs to Mikito Ogino
 # -*- coding: utf-8 -*-
 import time
 import numpy as np
-from scipy.signal import iirfilter, filtfilt
 import serial
 import serial.tools.list_ports
 import time
 import threading
-from pyOpenBCI import OpenBCICyton
-from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds, BrainFlowError
 import os
 import random
 import pygame
+import shutil
+
+from pathlib import Path
+from scipy.signal import iirfilter, filtfilt
+from pyOpenBCI import OpenBCICyton
+from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds, BrainFlowError
 
 # --- Constants ---
 SERIES_R = 2200.0			# Series resistance (2.2 kΩ)
@@ -362,16 +365,17 @@ def createSessionFolder(user_id, timestamp, base_path="BMI Trainer Data/"):
 
 def deleteEmptyFolders(base_path="BMI Trainer Data/"):
 	"""Remove subdirectories under base_path that contain no files."""
-	base_dir = os.path.abspath(base_path)
-	if not os.path.isdir(base_dir):
+	base_dir = Path(base_path).expanduser().resolve()
+	if not base_dir.is_dir():
 		return
 
-	for entry in os.scandir(base_dir):
+	for entry in base_dir.iterdir():
 		if not entry.is_dir():
 			continue
 		try:
-			if not any(Path(entry.path).iterdir()):
-				Path(entry.path).rmdir()
+			contains_files = any(child.is_file() for child in entry.rglob('*'))
+			if not contains_files:
+				shutil.rmtree(entry)
 		except Exception:
 			pass
 
