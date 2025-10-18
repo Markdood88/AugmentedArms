@@ -6,6 +6,7 @@ import time
 import math
 import threading
 import numpy as np
+import datetime
 
 #Audio BMI Code by MIKITO OGINO
 import ABMI_Utils
@@ -73,6 +74,7 @@ class Scene:
 
 	def draw(self, surface):
 		pass
+
 
 # --- Welcome Scene ---
 class WelcomeScene(Scene):
@@ -213,8 +215,6 @@ class BCIConnectScene(Scene):
 				self.app.switch_scene("trainer") #SKIP IMPEDANCE
 			else:
 				self.app.switch_scene("impedance_check_gray")# Automatically move to first cable check (Gray)
-			
-
 
 	def _try_connect(self):
 		
@@ -521,7 +521,9 @@ class TrainerScene(Scene):
 	def __init__(self, app):
 		super().__init__(app)
 		self.app = app
-		self.user_id = ABMI_Utils.getUserID("BMI Trainer Data/UserID.txt")
+		self.app.user_id = ABMI_Utils.getUserID("BMI Trainer Data/UserID.txt")
+		ABMI_Utils.deleteEmptyFolders(base_path="BMI Trainer Data/") #Delete empty folders before creating a Session Folder
+		self.app.session_Folder = ABMI_Utils.createSessionFolder(self.app.user_id, datetime.datetime.now(), base_path="BMI Trainer Data/")
 		self.buttons = []
 
 		# Button Creation
@@ -559,13 +561,6 @@ class TrainerScene(Scene):
 		# --- Reset impedance data ---
 		self.app.impedance_results = []
 		self.app.current_cable_result = None
-
-		# --- Reset BCIBoard impedance state if available ---
-		if self.app.bciboard:
-			try:
-				self.app.bciboard.reset_impedance_state()
-			except AttributeError:
-				print("BCIBoard has no reset_impedance_state(), skipping reset")
 
 		# --- Reset each ImpedanceCheckSingleScene state ---
 		for scene_name, scene_obj in self.app.scenes.items():
@@ -611,7 +606,7 @@ class TrainerScene(Scene):
 		surface.blit(label_surface, label_rect)
   
   		# --- Draw User ID (top right) ---
-		user_text = f"User ID: {self.user_id}"
+		user_text = f"User ID: {self.app.user_id}"
 		user_surface = self.userid_font.render(user_text, True, black)
 		user_rect = user_surface.get_rect(topright=(surface.get_width() - 30, 10))
 		surface.blit(user_surface, user_rect)
@@ -644,8 +639,9 @@ class CollectDataSingleScene(Scene):
 		# --- Cancel Button ---
 		self.add_button("Cancel", 165, 220, 150, 70, self.cancel_action, font_size=26, color=light_red)
   
-		# --- EEG check ---
-		self.checked_eeg = False
+		# --- EEG streaming state ---
+		self.stream_start_attempted = False
+		self.stream_ready_announced = False
 
 	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
 		button = {
@@ -660,6 +656,8 @@ class CollectDataSingleScene(Scene):
 	def cancel_action(self):
 		print("Cancel pressed — returning to Trainer Scene")
 		self.app.switch_scene("trainer")
+		self.stream_start_attempted = False
+		self.stream_ready_announced = False
 
 	def handle_events(self, event):
 		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -667,27 +665,19 @@ class CollectDataSingleScene(Scene):
 			for btn in self.buttons:
 				if btn["rect"].collidepoint(mx, my):
 					btn["callback"]()
-     
-	def check_eeg_ready(self):
-		bciboard = self.app.bciboard
-		if bciboard is not None:
-			print("[EEG Check] Board initialized and ready")
-			self.eeg_ready = True
-		else:
-			print("[EEG Check] Board not initialized — not ready")
-			self.eeg_ready = False
 
 	def update(self):
 		# Rotate spinner continuously
 		self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
-  
-		# --- Check EEG once when scene becomes active ---
-		if not self.checked_eeg:
-			self.checked_eeg = True
-			if self.app.bciboard is None:
-				print("[CollectDataSingleScene] EEG not ready!")
-			else:
-				print("[CollectDataSingleScene] EEG ready!")
+
+		#Get the board
+		board = getattr(self.app, 'bciboard', None)
+		
+		if not board.connected:
+			print('Board Not Connected')
+
+		if not board.streaming:
+			board.stream()
 
 	def draw(self, surface):
 		surface.fill(white)
@@ -696,17 +686,17 @@ class CollectDataSingleScene(Scene):
 		max_width = surface.get_width() - 120
 		start_y = 40
 
-		y_after_en = draw_text_wrapped(surface, self.message_en, self.font_en, black, 50, start_y, max_width, 8, "en")
-		draw_text_wrapped(surface, self.message_jp, self.font_jp, black, 50, start_y + y_after_en + 5, max_width, 8, "jp")
+		y_after_en = draw_text_wrapped(surface, self.message_en, self.font_en, black, 50, start_y, max_width, 8, 'en')
+		y_after_jp = draw_text_wrapped(surface, self.message_jp, self.font_jp, black, 50, start_y + y_after_en + 5, max_width, 8, 'jp')
 
 		# --- Buttons ---
 		for btn in self.buttons:
-			pygame.draw.rect(surface, btn["color"], btn["rect"])
-			pygame.draw.rect(surface, black, btn["rect"], 3)
-			text_surface = btn["font"].render(btn["text"], True, black)
-			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			pygame.draw.rect(surface, btn['color'], btn['rect'])
+			pygame.draw.rect(surface, black, btn['rect'], 3)
+			text_surface = btn['font'].render(btn['text'], True, black)
+			text_rect = text_surface.get_rect(center=btn['rect'].center)
 			surface.blit(text_surface, text_rect)
-   
+
 		# Draw spinner
 		num_lines = 12
 		for i in range(num_lines):
@@ -715,6 +705,7 @@ class CollectDataSingleScene(Scene):
 			x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
 			y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
 			pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
 
 # --- Main App Class ---
 class BMITrainer:
@@ -738,12 +729,11 @@ class BMITrainer:
 		self.dev_start_scene = "bci_connect"
 		self.dev_skip_bci_connect = False
 
-		# global BCIBoard object
 		self.bciboard = None
-		# Impedance check results
 		self.impedance_results = []
-		# Current cable result storage
 		self.current_cable_result = None
+		self.user_id = None
+		self.session_Folder = None
 
 		# Scenes
 		self.scenes = {
