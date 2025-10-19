@@ -70,7 +70,8 @@ class BCIBoard:
 		self._record_thread = None
 		self._record_stop_event = None
 		self._record_file_path = None
-		self._sample_queue = queue.Queue(maxsize=1000)
+		self._sample_queue = queue.Queue(maxsize=1000) #Queue holds up to 4 seconds of data
+		self.minimum_recorded_rows = 5800 #20seconds x250, + 500for baseline x2
 
 	def connect(self):
 		BoardShim.disable_board_logger()
@@ -321,6 +322,11 @@ class BCIBoard:
 				self.recording = False
 				self._record_thread = None
 				self._record_stop_event = None
+				min_rows = getattr(self, "minimum_recorded_rows", None)
+				if not should_delete and isinstance(min_rows, int) and min_rows > 0:
+					if rows_written < min_rows:
+						print(f"[BCIBoard] Recording discarded: only {rows_written} rows (minimum {min_rows}).")
+						should_delete = True
 				if self._record_file_path and should_delete:
 					try:
 						Path(self._record_file_path).unlink()
@@ -353,7 +359,7 @@ class BCIBoard:
 		self._record_thread = None
 		self._record_stop_event = None
 		self._record_file_path = None
-		self._sample_queue = queue.Queue()
+		self._sample_queue = queue.Queue(maxsize=1000)
 		print('[BCIBoard] Recording stopped')
 
 	def check_impedance(self, channels=None):
@@ -561,22 +567,52 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 		timestamp_str = str(timestamp)
 
 	filename = f"{user_id}-{timestamp_str}-{lcr_value}.csv"
-	csv_path = base_dir / filename
 
 	instruction_path = f"Sounds/instruction_{direction}.wav"
 	beep_path = f"Sounds/beep_{direction}.wav"
 	instruction_starting = "Sounds/instruction_starting.wav"
+ 
+	stimulus_sound, sequence_id = generateSequence()
 
 	def _sequence_worker():
 		try:
-			play_single_sound(instruction_path, block=True)
+			play_single_sound(instruction_path, block=True) #Focus on Left/Center/#Right
 			time.sleep(ISI)
 
 			for _ in range(3):
-				play_single_sound(beep_path, block=True)
+				play_single_sound(beep_path, block=True) #Beep x3
 				time.sleep(ISI)
 
-			play_single_sound(instruction_starting, block=True)
+			play_single_sound(instruction_starting, block=True) #Starting now
+
+			##BASELINE and record
+			board.stimulus_sound = 0
+			board.sequence_id = 0
+			board.start_recording(base_path, filename=filename)
+			time.sleep(2)
+   
+			for sound, id in zip(stimulus_sound, sequence_id):
+				board.stimulus_sound = sound
+				board.sequence_id = id
+    
+				if sound == 1:
+					play_single_sound("Sounds/beep_left.wav", block=True)
+					time.sleep(ISI)
+				elif sound == 2:
+					play_single_sound("Sounds/beep_center.wav", block=True)
+					time.sleep(ISI)
+				elif sound == 3:
+					play_single_sound("Sounds/beep_right.wav", block=True)
+					time.sleep(ISI)
+				elif sound == 4:
+					play_single_sound("Sounds/beep_silent.wav", block=True)
+					time.sleep(ISI)
+	
+			board.stimulus_sound = 0
+			board.sequence_id = 0
+			time.sleep(2)
+			board.stop_recording()
+			
 		except Exception as exc:
 			print(f"[BCIBoard] Training sequence error: {exc}")
 			raise SingleTrainingSequenceError(str(exc)) from exc
@@ -584,7 +620,7 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 	sequence_thread = threading.Thread(target=_sequence_worker, daemon=True)
 	sequence_thread.start()
 
-	return csv_path, sequence_thread
+	return sequence_thread
 
 def getUserID(filepath="BMI Trainer Data/UserID.txt"):
 	"""
@@ -631,3 +667,64 @@ def generateSequence():
         sequence_ids.extend([set_idx + 1] * len(stim_order))
         
     return stimulation_sequence, sequence_ids
+
+def countRecordings(user_id, base_folder="BMI Trainer Data/"):
+	"""Count left/center/right recordings for a user across session folders."""
+	if not isinstance(user_id, str):
+		user_id = str(user_id)
+	if len(user_id) != 9 or not user_id.isdigit():
+		raise ValueError("user_id must be a 9-digit string")
+
+	base_dir = Path(base_folder).expanduser().resolve()
+	if not base_dir.exists():
+		return 0, 0, 0
+
+	left = center = right = 0
+
+	for session_dir in base_dir.iterdir():
+		if not session_dir.is_dir():
+			continue
+		for csv_path in session_dir.glob(f"{user_id}-*.csv"):
+			name = csv_path.name.rstrip().lower()
+			if name.endswith('1.csv'):
+				left += 1
+			elif name.endswith('2.csv'):
+				center += 1
+			elif name.endswith('3.csv'):
+				right += 1
+
+	return left, center, right
+
+def chooseNewLCRValue(counts, acceptable_span=5, max_per_class=333):
+	"""
+	Choose the next L/C/R value (1,2,3) to keep counts balanced.
+
+	counts must be an iterable of three non-negative integers representing (left, center, right).
+	If the spread between the minimum and maximum counts exceeds acceptable_span, the lowest count is chosen.
+	Otherwise a random choice is made among classes that are still below max_per_class.
+	"""
+	try:
+		left, center, right = counts
+	except Exception as exc:
+		raise ValueError("counts must be an iterable with three entries (left, center, right)") from exc
+
+	for value in (left, center, right):
+		if not isinstance(value, int) or value < 0:
+			raise ValueError("All count values must be non-negative integers")
+
+	class_counts = [left, center, right]
+
+	eligible_indices = [idx for idx, count in enumerate(class_counts) if count < max_per_class]
+	if not eligible_indices:
+		raise ValueError("All class counts have reached the maximum allowed recordings")
+
+	min_count = min(class_counts[idx] for idx in eligible_indices)
+	max_count = max(class_counts[idx] for idx in eligible_indices)
+
+	if max_count - min_count > acceptable_span:
+		target_indices = [idx for idx in eligible_indices if class_counts[idx] == min_count]
+	else:
+		target_indices = eligible_indices
+
+	chosen_index = random.choice(target_indices)
+	return chosen_index + 1  # map 0->1 (left), 1->2 (center), 2->3 (right)
