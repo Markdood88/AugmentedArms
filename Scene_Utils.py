@@ -75,7 +75,6 @@ class Scene:
 	def draw(self, surface):
 		pass
 
-
 # --- Welcome Scene ---
 class WelcomeScene(Scene):
 	def __init__(self, app):
@@ -343,6 +342,7 @@ class ImpedanceCheckSingleScene(Scene):
 		self.status = "done"
 
 	def update(self):
+     
 		if self.status == "waiting":
 			self.start_impedance_check()
 		elif self.status == "checking":
@@ -525,7 +525,6 @@ class TrainerScene(Scene):
 		ABMI_Utils.deleteEmptyFolders(base_path="BMI Trainer Data/") #Delete empty folders before creating a Session Folder
 		self.app.session_Folder = ABMI_Utils.createSessionFolder(self.app.user_id, datetime.datetime.now(), base_path="BMI Trainer Data/")
 		self.buttons = []
-		self.lcr_updated = False
 
 		# Button Creation
 		self.add_button("Train BMI", 10, 15, 200, 90, self.train_bmi, font_size=28, color=soft_green)
@@ -534,6 +533,7 @@ class TrainerScene(Scene):
 		self.add_button("Left", 220, 215, 80, 90, self.audio_left, font_size=20, color=white)
 		self.add_button("Center", 305, 215, 80, 90, self.audio_center, font_size=20, color=white)
 		self.add_button("Right", 390, 215, 80, 90, self.audio_right, font_size=20, color=white)
+		self.add_button("Continue →", 255, 100, 180, 70, self.continue_upload, font_size=24, color=warning_orange)
 
 		#Font for labels like "Test Audio"
 		self.label_font = pygame.font.Font(notoFont, 24)
@@ -577,6 +577,9 @@ class TrainerScene(Scene):
 		else:
 			print(f"Scene '{scene_name}' not found!")
 
+	def continue_upload(self):
+		return
+
 	def audio_left(self):
 		ABMI_Utils.play_single_sound('Sounds/beep_left.wav')
 
@@ -594,9 +597,10 @@ class TrainerScene(Scene):
 					btn["callback"]()
 
 	def update(self):
-		if not self.lcr_updated:
-			self.app.refresh_lcr_count()
-			self.lcr_updated = True
+		if self.app.developer_mode:
+			return
+		elif not self.app.bciboard.connected:
+			self.app.switch_scene("emergency")
 		pass
 
 	def draw(self, surface):
@@ -745,6 +749,63 @@ class CollectDataSingleScene(Scene):
 			y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
 			pygame.draw.circle(surface, black, (int(x), int(y)), 3)
 
+# --- Emergency Board Disconnected ---
+class EmergencyDisconnectedScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.app = app
+		self.font_en = pygame.font.Font(notoFont, 22)
+		self.font_jp = pygame.font.Font(notoFont, 22)
+		self.buttons = []
+		self.add_button("Reconnect", 150, 220, 180, 70, self.reconnect_action, font_size=26, color=light_green)
+
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
+		}
+		self.buttons.append(button)
+
+	def reconnect_action(self):
+		print("Reconnect pressed")
+		self.app.bciboard.connect()
+
+	def handle_events(self, event):
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					btn["callback"]()
+
+	def update(self):
+		if self.app.bciboard.connected:	
+			self.app.switch_scene("trainer")
+		pass
+
+	def draw(self, surface):
+		surface.fill(white)
+
+		en_text = "Emergency: BCIBoard connection is lost!"
+		jp_text = "緊急: BCIボードの接続が失われました!"
+
+		en_surface = self.font_en.render(en_text, True, red)
+		en_rect = en_surface.get_rect(center=(surface.get_width() // 2, 100))
+		surface.blit(en_surface, en_rect)
+
+		jp_surface = self.font_jp.render(jp_text, True, red)
+		jp_rect = jp_surface.get_rect(center=(surface.get_width() // 2, en_rect.bottom + 40))
+		surface.blit(jp_surface, jp_rect)
+
+		for btn in self.buttons:
+			pygame.draw.rect(surface, btn["color"], btn["rect"])
+			pygame.draw.rect(surface, black, btn["rect"], 3)
+			text_surface = btn["font"].render(btn["text"], True, black)
+			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			surface.blit(text_surface, text_rect)
+
 # --- Main App Class ---
 class BMITrainer:
 	def __init__(self):
@@ -764,7 +825,7 @@ class BMITrainer:
 
 		# Developer mode flags
 		self.developer_mode = True
-		self.dev_start_scene = "bci_connect"
+		self.dev_start_scene = "trainer"
 		self.dev_skip_bci_connect = False
 
 		self.bciboard = None
@@ -781,7 +842,8 @@ class BMITrainer:
 			"bci_connect": BCIConnectScene(self),
 			"impedance_results_single": ImpedanceResultsSingleScene(self),
 			"trainer": TrainerScene(self),
-			"collect_data_single": CollectDataSingleScene(self)
+			"collect_data_single": CollectDataSingleScene(self),
+			"emergency": EmergencyDisconnectedScene(self)
 		}
 		
 		# Add individual cable check scenes from canonical list in ABMI_Utils
@@ -830,3 +892,4 @@ class BMITrainer:
 	def quit(self):
 		pygame.quit()
 		sys.exit()
+
