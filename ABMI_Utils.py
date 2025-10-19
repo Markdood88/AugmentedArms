@@ -18,6 +18,7 @@ import random
 import pygame
 import shutil
 import queue
+import datetime
 
 from pathlib import Path
 from scipy.signal import iirfilter, filtfilt
@@ -752,3 +753,43 @@ def chooseNewLCRValue(counts, acceptable_span=5, max_per_class=333):
 
 	chosen_index = random.choice(target_indices)
 	return chosen_index + 1  # map 0->1 (left), 1->2 (center), 2->3 (right)
+
+def deleteMostRecent(base_path="BMI Trainer Data/"):
+	"""Delete the most recent recording (by timestamp) across all session folders."""
+	base_dir = Path(base_path).expanduser().resolve()
+	if not base_dir.exists():
+		print(f"[deleteMostRecent] Base path not found: {base_dir}")
+		return False
+
+	most_recent_path = None
+	most_recent_time = None
+
+	for session_dir in base_dir.iterdir():
+		if not session_dir.is_dir():
+			continue
+		for csv_path in session_dir.glob('*.csv'):
+			name = csv_path.name
+			parts = name.split('-')
+			if len(parts) < 8:
+				continue
+			try:
+				timestamp_str = '-'.join(parts[1:7])
+				tstamp = datetime.datetime.strptime(timestamp_str, '%Y-%m-%d-%H-%M-%S')
+			except Exception:
+				continue
+
+			if most_recent_time is None or tstamp > most_recent_time:
+				most_recent_time = tstamp
+				most_recent_path = csv_path
+
+	if most_recent_path is None:
+		print('[deleteMostRecent] No recordings found.')
+		return False
+
+	try:
+		most_recent_path.unlink()
+		print(f"[deleteMostRecent] Deleted most recent recording: {most_recent_path}")
+		return True
+	except Exception as exc:
+		print(f"[deleteMostRecent] Failed to delete {most_recent_path}: {exc}")
+		return False
