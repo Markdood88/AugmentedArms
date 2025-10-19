@@ -554,7 +554,8 @@ class TrainerScene(Scene):
 		self.app.switch_scene("collect_data_single")
 
 	def delete_recent(self):
-		print("Delete Recent clicked!")
+		ABMI_Utils.deleteMostRecent(base_path="BMI Trainer Data/")
+		self.app.refresh_lcr_count()
 
 	def check_impedance(self):
 		print("Restarting impedance check sequence...")
