@@ -17,6 +17,7 @@ import csv
 import random
 import pygame
 import shutil
+import queue
 
 from pathlib import Path
 from scipy.signal import iirfilter, filtfilt
@@ -47,6 +48,9 @@ CABLE_COLORS_RGB = [
 # Legacy string color names for backward compatibility
 CABLE_COLORS = ['gray', 'purple', 'blue', 'green', 'yellow', 'orange', 'red', 'brown']
 
+class SingleTrainingSequenceError(Exception):
+	"""Raised when a single training sequence fails to start."""
+
 class BCIBoard:
 	def __init__(self, port="/dev/ttyUSB0"):
 		self.port = port
@@ -61,12 +65,12 @@ class BCIBoard:
   
 		#Recording Vars
 		self.recording = False
-		self.stimulus_sound = None
-		self.sequence_id = None
-		self.eeg_sample = []
+		self.stimulus_sound = 0
+		self.sequence_id = 0
 		self._record_thread = None
 		self._record_stop_event = None
 		self._record_file_path = None
+		self._sample_queue = queue.Queue(maxsize=1000)
 
 	def connect(self):
 		BoardShim.disable_board_logger()
@@ -192,19 +196,31 @@ class BCIBoard:
 					self._last_data_time = time.time()
 					num_samples = data.shape[1]
 					for i in range(num_samples):
+						timestamp = float(data[ts_idx, i]) if ts_idx is not None else time.time()
+						eeg_values = np.array(data[eeg_idxs, i], copy=True)
 						sample = {
-							"timestamp": float(data[ts_idx, i]) if ts_idx is not None else None,
-							"eeg": data[eeg_idxs, i]
+							"timestamp": timestamp,
+							"eeg": eeg_values,
+							"label": self.stimulus_sound,
+							"seq": self.sequence_id
 						}
-						try:
-							self.eeg_sample = sample
-						except Exception:
-							pass
+						if self.recording and self._record_stop_event and not self._record_stop_event.is_set():
+							try:
+								self._sample_queue.put_nowait(sample)
+							except queue.Full:
+								try:
+									self._sample_queue.get_nowait()
+								except queue.Empty:
+									pass
+								try:
+									self._sample_queue.put_nowait(sample)
+								except queue.Full:
+									pass
 				else:
-					time.sleep(0.05)
+					time.sleep(0.002)
 					continue
 
-				time.sleep(0.01)
+				time.sleep(0.001)
 
 			self.streaming = False
 			if not self.connected:
@@ -250,47 +266,69 @@ class BCIBoard:
 		stop_event = threading.Event()
 		self._record_stop_event = stop_event
 		self._record_file_path = str(file_path)
+		self._sample_queue = queue.Queue(maxsize=1000)
+		sample_queue = self._sample_queue
 
 		def _record_worker():
-			last_sample_ref = None
+			rows_written = 0
+			should_delete = False
 			try:
 				with file_path.open('w', newline='') as csvfile:
 					writer = csv.writer(csvfile)
 					writer.writerow(header)
-					while not stop_event.is_set():
-						sample = self.eeg_sample
-						if not sample or sample is last_sample_ref:
-							time.sleep(0.001)
+					while not stop_event.is_set() or not sample_queue.empty():
+						if not self.connected or not self.streaming:
+							should_delete = True
+							stop_event.set()
+							while not sample_queue.empty():
+								try:
+									sample_queue.get_nowait()
+								except queue.Empty:
+									break
+							break
+
+						try:
+							sample = sample_queue.get(timeout=0.05)
+						except queue.Empty:
 							continue
 
-						last_sample_ref = sample
 						timestamp = sample.get('timestamp')
 						if timestamp is None:
 							timestamp = time.time()
 
 						eeg_values = sample.get('eeg')
 						if eeg_values is None:
-							time.sleep(0.001)
 							continue
 
 						row = [float(timestamp)]
 						eeg_array = np.asarray(eeg_values).flatten()
 						row.extend(float(val) for val in eeg_array[:8])
 
-						label = self.stimulus_sound if self.stimulus_sound is not None else ''
-						seq = self.sequence_id if self.sequence_id is not None else ''
-						row.append(label)
-						row.append(seq)
+						label = sample.get('label', '')
+						seq = sample.get('seq', '')
+						row.append(label if label is not None else '')
+						row.append(seq if seq is not None else '')
 
 						writer.writerow(row)
-						csvfile.flush()
-						time.sleep(0.001)
+						rows_written += 1
+						if rows_written % 50 == 0:
+							csvfile.flush()
+					csvfile.flush()
 			except Exception as e:
 				print(f'[BCIBoard] Recording error: {e}')
+				should_delete = True
 			finally:
 				self.recording = False
 				self._record_thread = None
 				self._record_stop_event = None
+				if self._record_file_path and should_delete:
+					try:
+						Path(self._record_file_path).unlink()
+						print(f"[BCIBoard] Discarded incomplete recording: {self._record_file_path}")
+					except Exception:
+						pass
+				self._record_file_path = None
+				self._sample_queue = queue.Queue(maxsize=1000)
 
 		self.recording = True
 		thread = threading.Thread(target=_record_worker, daemon=True)
@@ -315,6 +353,7 @@ class BCIBoard:
 		self._record_thread = None
 		self._record_stop_event = None
 		self._record_file_path = None
+		self._sample_queue = queue.Queue()
 		print('[BCIBoard] Recording stopped')
 
 	def check_impedance(self, channels=None):
@@ -426,22 +465,30 @@ def send_leadoff(board, ch, p_apply, n_apply):
 
 # ---- Mark implemented functions ---- #
 
-def play_single_sound(filepath="beep_left.wav"):
+def play_single_sound(filepath="beep_left.wav", block=False):
 	"""
-	Play a .wav file asynchronously (non-blocking) using pygame.
+	Play a .wav file. By default this is asynchronous; pass block=True to wait until completion.
 	"""
 	if not os.path.exists(filepath):
 		print(f"[Sound] File not found: {filepath}")
 		return
 
-	def _play():
-		try:
-			sound = pygame.mixer.Sound(filepath)
-			sound.play()  # non-blocking
-		except Exception as e:
-			print(f"[Sound] Failed to play sound: {e}")
+	def _play_audio():
+		sound = pygame.mixer.Sound(filepath)
+		channel = sound.play()
+		if channel is not None:
+			while channel.get_busy():
+				time.sleep(0.01)
+		else:
+			time.sleep(sound.get_length())
 
-	threading.Thread(target=_play, daemon=True).start()
+	try:
+		if block:
+			_play_audio()
+		else:
+			threading.Thread(target=_play_audio, daemon=True).start()
+	except Exception as e:
+		print(f"[Sound] Failed to play sound: {e}")
 
 def createSessionFolder(user_id, timestamp, base_path="BMI Trainer Data/"):
 	'''Create a session folder named '<user_id>-YYYY-MM-DD-HH-MM' inside base_path.'''
@@ -478,6 +525,66 @@ def deleteEmptyFolders(base_path="BMI Trainer Data/"):
 				shutil.rmtree(entry)
 		except Exception:
 			pass
+
+def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path):
+	"""
+	Start a single training sequence on a background thread.
+
+	Returns a tuple of (csv_path, worker_thread).
+	"""
+	if board is None:
+		raise ValueError('board is required')
+
+	if not getattr(board, 'connected', False):
+		raise RuntimeError('BCIBoard is not connected')
+
+	if not getattr(board, 'streaming', False):
+		raise RuntimeError('BCIBoard is not streaming')
+
+	if not isinstance(user_id, str):
+		user_id = str(user_id)
+	if len(user_id) != 9 or not user_id.isdigit():
+		raise ValueError('user_id must be a 9-digit string')
+
+	if lcr_value not in (1, 2, 3):
+		raise ValueError('lcr_value must be 1 (left), 2 (center), or 3 (right)')
+
+	direction_map = {1: "left", 2: "center", 3: "right"}
+	direction = direction_map[lcr_value]
+
+	base_dir = Path(base_path).expanduser().resolve()
+	base_dir.mkdir(parents=True, exist_ok=True)
+
+	if hasattr(timestamp, 'strftime'):
+		timestamp_str = timestamp.strftime('%Y-%m-%d-%H-%M-%S')
+	else:
+		timestamp_str = str(timestamp)
+
+	filename = f"{user_id}-{timestamp_str}-{lcr_value}.csv"
+	csv_path = base_dir / filename
+
+	instruction_path = f"Sounds/instruction_{direction}.wav"
+	beep_path = f"Sounds/beep_{direction}.wav"
+	instruction_starting = "Sounds/instruction_starting.wav"
+
+	def _sequence_worker():
+		try:
+			play_single_sound(instruction_path, block=True)
+			time.sleep(ISI)
+
+			for _ in range(3):
+				play_single_sound(beep_path, block=True)
+				time.sleep(ISI)
+
+			play_single_sound(instruction_starting, block=True)
+		except Exception as exc:
+			print(f"[BCIBoard] Training sequence error: {exc}")
+			raise SingleTrainingSequenceError(str(exc)) from exc
+
+	sequence_thread = threading.Thread(target=_sequence_worker, daemon=True)
+	sequence_thread.start()
+
+	return csv_path, sequence_thread
 
 def getUserID(filepath="BMI Trainer Data/UserID.txt"):
 	"""
