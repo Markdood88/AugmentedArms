@@ -525,6 +525,7 @@ class TrainerScene(Scene):
 		ABMI_Utils.deleteEmptyFolders(base_path="BMI Trainer Data/") #Delete empty folders before creating a Session Folder
 		self.app.session_Folder = ABMI_Utils.createSessionFolder(self.app.user_id, datetime.datetime.now(), base_path="BMI Trainer Data/")
 		self.buttons = []
+		self.lcr_updated = False
 
 		# Button Creation
 		self.add_button("Train BMI", 10, 15, 200, 90, self.train_bmi, font_size=28, color=soft_green)
@@ -576,15 +577,12 @@ class TrainerScene(Scene):
 			print(f"Scene '{scene_name}' not found!")
 
 	def audio_left(self):
-		print("Audio Left clicked!")
 		ABMI_Utils.play_single_sound('Sounds/beep_left.wav')
 
 	def audio_center(self):
-		print("Audio Center clicked!")
 		ABMI_Utils.play_single_sound('Sounds/beep_center.wav')
 
 	def audio_right(self):
-		print("Audio Right clicked!")
 		ABMI_Utils.play_single_sound('Sounds/beep_right.wav')
 
 	def handle_events(self, event):
@@ -595,6 +593,9 @@ class TrainerScene(Scene):
 					btn["callback"]()
 
 	def update(self):
+		if not self.lcr_updated:
+			self.app.refresh_lcr_count()
+			self.lcr_updated = True
 		pass
 
 	def draw(self, surface):
@@ -604,12 +605,21 @@ class TrainerScene(Scene):
 		label_surface = self.label_font.render("Test Audio", True, black)
 		label_rect = label_surface.get_rect(center=(345, 195))  # center above audio buttons
 		surface.blit(label_surface, label_rect)
-  
-  		# --- Draw User ID (top right) ---
+
+		# --- Draw User ID (top right) ---
 		user_text = f"User ID: {self.app.user_id}"
 		user_surface = self.userid_font.render(user_text, True, black)
 		user_rect = user_surface.get_rect(topright=(surface.get_width() - 30, 10))
 		surface.blit(user_surface, user_rect)
+
+		# --- Draw User LCR Count ---
+		left_count, center_count, right_count = (self.app.recording_lcr_counts
+			if getattr(self.app, "recording_lcr_counts", None)
+			else (0, 0, 0))
+		lcr_text = f"L: {left_count}   C: {center_count}   R: {right_count}"
+		lcr_surface = self.userid_font.render(lcr_text, True, black)
+		lcr_rect = lcr_surface.get_rect(topright=(surface.get_width() - 30, user_rect.bottom + 8))
+		surface.blit(lcr_surface, lcr_rect)
 
 		# --- Draw buttons ---
 		for btn in self.buttons:
@@ -629,8 +639,9 @@ class CollectDataSingleScene(Scene):
 		self.message_en = "Collecting training data, in case of problem, please press Cancel..."
 		self.message_jp = "データ収集中。問題があればキャンセルを押してください..."
 		self.buttons = []
-		self.recording = False
-  
+		self.sequence_thread = None
+		self.sequence_stop_event = None
+
 		# Spinner setup
 		self.spinner_angle = 0
 		self.spinner_radius = 20
@@ -639,10 +650,6 @@ class CollectDataSingleScene(Scene):
 
 		# --- Cancel Button ---
 		self.add_button("Cancel", 165, 220, 150, 70, self.cancel_action, font_size=26, color=light_red)
-  
-		# --- EEG streaming state ---
-		self.stream_start_attempted = False
-		self.stream_ready_announced = False
 
 	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
 		button = {
@@ -656,9 +663,21 @@ class CollectDataSingleScene(Scene):
 
 	def cancel_action(self):
 		print("Cancel pressed — returning to Trainer Scene")
+		
+		self.sequence_stop_event.set()
+  
+		'''board = getattr(self.app, "bciboard", None)
+		if board and getattr(board, "recording", False):
+			try:
+				board.stop_recording()
+			except Exception:
+				pass'''
+
+	def emergency_cancel(self):
+		if self.sequence_stop_event:
+			self.sequence_stop_event.set()
+		self.sequence_thread = None
 		self.app.switch_scene("trainer")
-		self.stream_start_attempted = False
-		self.stream_ready_announced = False
 
 	def handle_events(self, event):
 		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -671,18 +690,32 @@ class CollectDataSingleScene(Scene):
 		# Rotate spinner continuously
 		self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
 
-		#Get the board
-		board = getattr(self.app, 'bciboard', None)
-		
-		if not board.connected:
-			print('Board Not Connected')
+		#Get Board
+		board = getattr(self.app, "bciboard", None)
 
-		if not board.streaming:
+		#Critical problem
+		if board is None:
+			print("No BCIBoard instance available")
+			self.emergency_cancel()
+			return
+		if not getattr(board, "connected", False):
+			print("Board Not Connected")
+			self.emergency_cancel()
+			return
+
+		#Make it stream
+		if not getattr(board, "streaming", False):
 			board.stream()
-   
-		if not board.recording:
-			#call recording function
-			True
+
+		if not self.sequence_thread:
+			timestamp = datetime.datetime.now()
+			lcr_choice = ABMI_Utils.chooseNewLCRValue(self.app.recording_lcr_counts)
+			self.sequence_thread, self.sequence_stop_event = ABMI_Utils.startSingleTrainingSequence(board, self.app.user_id, timestamp, lcr_choice, self.app.session_Folder)
+
+		if self.sequence_thread:
+			if not self.sequence_thread.is_alive():
+				self.sequence_thread = None
+				self.app.switch_scene("trainer")
 
 	def draw(self, surface):
 		surface.fill(white)
@@ -738,6 +771,7 @@ class BMITrainer:
 		self.current_cable_result = None
 		self.user_id = None
 		self.session_Folder = None
+		self.recording_lcr_counts = None
 
 		# Scenes
 		self.scenes = {
@@ -764,7 +798,17 @@ class BMITrainer:
 
 	def switch_scene(self, scene_name):
 		if scene_name in self.scenes:
+			if scene_name == 'trainer':
+				self.refresh_lcr_count()
 			self.current_scene = self.scenes[scene_name]
+			if hasattr(self.current_scene, 'refresh_lcr_count'):
+				try:
+					self.current_scene.refresh_lcr_count()
+				except Exception:
+					pass
+   
+	def refresh_lcr_count(self):
+		self.recording_lcr_counts = ABMI_Utils.countRecordings(self.user_id, base_folder="BMI Trainer Data/")
 
 	def handle_events(self):
 		for event in pygame.event.get():
