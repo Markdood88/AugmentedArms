@@ -536,7 +536,7 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 	"""
 	Start a single training sequence on a background thread.
 
-	Returns a tuple of (csv_path, worker_thread).
+	Returns a tuple of (csv_path, worker_thread, cancel_event).
 	"""
 	if board is None:
 		raise ValueError('board is required')
@@ -573,25 +573,41 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 	instruction_starting = "Sounds/instruction_starting.wav"
  
 	stimulus_sound, sequence_id = generateSequence()
+	cancel_event = threading.Event()
 
 	def _sequence_worker():
 		try:
-			play_single_sound(instruction_path, block=True) #Focus on Left/Center/#Right
+			
+			if cancel_event.is_set():
+				return
+
+			play_single_sound(instruction_path, block=True) #First Instruction
 			time.sleep(ISI)
 
-			for _ in range(3):
-				play_single_sound(beep_path, block=True) #Beep x3
+			if cancel_event.is_set():
+				return
+
+			for _ in range(3): #3 Beeps
+				play_single_sound(beep_path, block=True)
 				time.sleep(ISI)
 
-			play_single_sound(instruction_starting, block=True) #Starting now
+			if cancel_event.is_set():
+				return
+   
+			play_single_sound(instruction_starting, block=True) #Say Starting
 
-			##BASELINE and record
+			if cancel_event.is_set():
+				return
+   
+			#Start Recording
 			board.stimulus_sound = 0
 			board.sequence_id = 0
 			board.start_recording(base_path, filename=filename)
 			time.sleep(2)
    
 			for sound, id in zip(stimulus_sound, sequence_id):
+				if cancel_event.is_set():
+					break
 				board.stimulus_sound = sound
 				board.sequence_id = id
     
@@ -607,20 +623,28 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 				elif sound == 4:
 					play_single_sound("Sounds/beep_silent.wav", block=True)
 					time.sleep(ISI)
+  
+			if cancel_event.is_set():
+				board.stop_recording()
+				return
 	
 			board.stimulus_sound = 0
 			board.sequence_id = 0
 			time.sleep(2)
+
 			board.stop_recording()
 			
 		except Exception as exc:
 			print(f"[BCIBoard] Training sequence error: {exc}")
 			raise SingleTrainingSequenceError(str(exc)) from exc
+		finally:
+			board.stimulus_sound = 0
+			board.sequence_id = 0
 
 	sequence_thread = threading.Thread(target=_sequence_worker, daemon=True)
 	sequence_thread.start()
 
-	return sequence_thread
+	return sequence_thread, cancel_event
 
 def getUserID(filepath="BMI Trainer Data/UserID.txt"):
 	"""
