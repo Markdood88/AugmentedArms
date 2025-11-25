@@ -24,6 +24,7 @@ from pathlib import Path
 from scipy.signal import iirfilter, filtfilt
 from pyOpenBCI import OpenBCICyton
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds, BrainFlowError
+from ftplib import FTP, error_perm, all_errors
 
 # --- Constants ---
 SERIES_R = 2200.0			# Series resistance (2.2 kΩ)
@@ -32,6 +33,7 @@ MEAS_SEC = 2.0				# Measurement duration in seconds
 SETTLE_SEC = 2.0			# Settling time after switching lead-off
 BAND = (5, 50)				# Bandpass filter range (Hz)
 ISI = 0.35 					# Inter-Stimulus Interval in seconds
+SOUND_LENGTH = .15			# Duration of Audio
 
 # Hand-coded color table for cable impedance display
 # Each color is defined as RGB tuple (0-255 range)
@@ -408,6 +410,58 @@ class BCIBoard:
 		print("Impedance check complete.")
 		return results
 
+class CloudConnection:
+    def __init__(self, host="ftp.yourdomain.com", user="yourusername", password="yourpassword", timeout=10):
+        self.host = host
+        self.user = user
+        self.password = password
+        self.timeout = timeout
+        self.ftp = None
+        
+    def connect(self):
+        try:
+            self.ftp = FTP(self.host, timeout=self.timeout)
+            self.ftp.login(self.user, self.password)
+        except Exception as e:
+            raise Exception(f"Failed to connect to cloud: {e}")
+        return True
+    
+    def folder_exists(self, user_id):
+        try:
+            self.ftp.cwd("home/File-EXTERNAL/B2J/Training_Data/" + user_id)
+        except Exception as e:
+            raise Exception(f"Failed to check if user folder exists: {e}")
+        return True
+    
+    def create_user_folder(self, user_id):
+        try:
+            self.ftp.mkd("home/File-EXTERNAL/B2J/Training_Data/" + user_id)
+        except Exception as e:
+            raise Exception(f"Failed to create user folder: {e}")
+        return True
+    
+    def count_files_in_folder(self, user_id):
+        try:
+            self.ftp.cwd("home/File-EXTERNAL/B2J/Training_Data/" + user_id)
+            return len(self.ftp.nlst())
+        except Exception as e:
+            raise Exception(f"Failed to count files in user folder: {e}")
+        return 0
+    
+    def upload_file(self, local_path, remote_path):
+        try:
+            self.ftp.storbinary(f"STOR {remote_path}", open(local_path, "rb"))
+        except Exception as e:
+            raise Exception(f"Failed to upload file to cloud: {e}")
+        return True
+    
+    def download_file(self, remote_path, local_path):
+        try:
+            self.ftp.retrbinary(f"RETR {remote_path}", open(local_path, "wb"))
+        except Exception as e:
+            raise Exception(f"Failed to download file from cloud: {e}")
+        return True
+
 def set_ads_to_impedance_on(board, ch: int):
 	"""
 	Configure ADS channel to impedance measurement mode.
@@ -606,24 +660,28 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 			board.start_recording(base_path, filename=filename)
 			time.sleep(2)
    
-			for sound, id in zip(stimulus_sound, sequence_id):
+			start_time = time.time() + 0.1  # 少し余裕を持って開始
+			for stim_idx, (sound, id) in enumerate(zip(stimulus_sound, sequence_id)):
+				
+				#Wait until the scheduled time only to play sound and update
+				scheduled_time = start_time + stim_idx * (ISI + SOUND_LENGTH)
+				while time.time() < scheduled_time:
+					time.sleep(0.0005)
+              
 				if cancel_event.is_set():
 					break
+ 
 				board.stimulus_sound = sound
 				board.sequence_id = id
     
 				if sound == 1:
 					play_single_sound("Sounds/beep_left.wav", block=True)
-					time.sleep(ISI)
 				elif sound == 2:
 					play_single_sound("Sounds/beep_center.wav", block=True)
-					time.sleep(ISI)
 				elif sound == 3:
 					play_single_sound("Sounds/beep_right.wav", block=True)
-					time.sleep(ISI)
 				elif sound == 4:
 					play_single_sound("Sounds/beep_silent.wav", block=True)
-					time.sleep(ISI)
   
 			if cancel_event.is_set():
 				board.stop_recording()
