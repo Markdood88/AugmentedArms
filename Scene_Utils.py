@@ -75,6 +75,9 @@ class Scene:
 	def draw(self, surface):
 		pass
 
+	def on_enter(self):
+		pass
+
 # --- Welcome Scene ---
 class WelcomeScene(Scene):
 	def __init__(self, app):
@@ -578,7 +581,7 @@ class TrainerScene(Scene):
 			print(f"Scene '{scene_name}' not found!")
 
 	def continue_upload(self):
-		return
+		self.app.switch_scene("upload_to_cloud")
 
 	def audio_left(self):
 		ABMI_Utils.play_single_sound('Sounds/beep_left.wav')
@@ -630,6 +633,91 @@ class TrainerScene(Scene):
 		for btn in self.buttons:
 			pygame.draw.rect(surface, btn["color"], btn["rect"])
 			pygame.draw.rect(surface, black, btn["rect"], 3)  # border
+			text_surface = btn["font"].render(btn["text"], True, black)
+			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			surface.blit(text_surface, text_rect)
+
+# --- Upload To Cloud Scene ---
+class UploadToCloudScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.app = app
+		self.title_font = pygame.font.Font(notoFont, 28)
+		self.count_font = pygame.font.Font(notoFont, 24)
+		self.buttons = []
+		self.cloudConnection = None
+		self.isConnected = False
+		self.cloudDataCount = 0
+		self.cloudIP = "131.113.139.72"
+		self.cloudUser = "ext_guest"
+		self.cloudPassword = "GuestMoonshot01"
+
+		self.add_button("← Trainer", 15, 150, 140, 70, self.go_back, font_size=22, color=cool_blue)
+		self.add_button("Upload", 170, 140, 120, 90, self.upload_action, font_size=26, color=soft_green)
+		self.add_button("Download →", 305, 150, 160, 70, self.go_forward, font_size=22, color=warning_orange)
+
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
+		}
+		self.buttons.append(button)
+
+	def on_enter(self):
+		if self.isConnected is False:
+			try:
+				self.cloudConnection = ABMI_Utils.CloudConnection(self.cloudIP, self.cloudUser, self.cloudPassword)
+				self.cloudConnection.connect()
+			except TypeError as err:
+				print(f"Cloud connection failed to initialize: {err}")
+				self.cloudConnection = None
+				self.isConnected = False
+			except Exception as err:
+				print(f"Error while connecting to cloud: {err}")
+				self.cloudConnection = None
+				self.isConnected = False
+		if self.isConnected:
+			if not self.cloudConnection.folder_exists(self.app.user_id):
+				self.cloudConnection.create_user_folder(self.app.user_id)
+				self.isConnected = True
+			self.cloudDataCount = self.cloudConnection.count_files_in_folder(self.app.user_id)
+
+	def go_back(self):
+		self.app.switch_scene("trainer")
+
+	def upload_action(self):
+		print("Upload action pressed - awaiting implementation")
+
+	def go_forward(self):
+		print("Forward scene placeholder - scene not implemented yet")
+
+	def handle_events(self, event):
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					btn["callback"]()
+
+	def update(self):
+		pass
+
+	def draw(self, surface):
+		surface.fill(white)
+		
+		title_surface = self.title_font.render("Upload To Cloud", True, black)
+		title_rect = title_surface.get_rect(center=(surface.get_width() // 2, 60))
+		surface.blit(title_surface, title_rect)
+  
+		count_surface = self.count_font.render(f"Data Count: {self.cloudDataCount}", True, black)
+		count_rect = count_surface.get_rect(center=(surface.get_width() // 2, 100))
+		surface.blit(count_surface, count_rect)
+
+		for btn in self.buttons:
+			pygame.draw.rect(surface, btn["color"], btn["rect"])
+			pygame.draw.rect(surface, black, btn["rect"], 3)
 			text_surface = btn["font"].render(btn["text"], True, black)
 			text_rect = text_surface.get_rect(center=btn["rect"].center)
 			surface.blit(text_surface, text_rect)
@@ -825,7 +913,7 @@ class BMITrainer:
 
 		# Developer mode flags
 		self.developer_mode = True
-		self.dev_start_scene = "trainer"
+		self.dev_start_scene = "bci_connect"
 		self.dev_skip_bci_connect = False
 
 		self.bciboard = None
@@ -842,6 +930,7 @@ class BMITrainer:
 			"bci_connect": BCIConnectScene(self),
 			"impedance_results_single": ImpedanceResultsSingleScene(self),
 			"trainer": TrainerScene(self),
+			"upload_to_cloud": UploadToCloudScene(self),
 			"collect_data_single": CollectDataSingleScene(self),
 			"emergency": EmergencyDisconnectedScene(self)
 		}
@@ -864,6 +953,8 @@ class BMITrainer:
 			if scene_name == 'trainer':
 				self.refresh_lcr_count()
 			self.current_scene = self.scenes[scene_name]
+			if hasattr(self.current_scene, 'on_enter'):
+				self.current_scene.on_enter()
 			if hasattr(self.current_scene, 'refresh_lcr_count'):
 				try:
 					self.current_scene.refresh_lcr_count()
@@ -892,4 +983,3 @@ class BMITrainer:
 	def quit(self):
 		pygame.quit()
 		sys.exit()
-
