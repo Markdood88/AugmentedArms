@@ -38,14 +38,14 @@ SOUND_LENGTH = .15			# Duration of Audio
 # Hand-coded color table for cable impedance display
 # Each color is defined as RGB tuple (0-255 range)
 CABLE_COLORS_RGB = [
-    (120, 120, 120),  # Channel 1: Gray
-    (129, 37, 186),    # Channel 2: Purple  
-    (19, 26, 120),      # Channel 3: Blue
-    (24, 168, 101),      # Channel 4: Green
-    (196, 187, 16),    # Channel 5: Yellow
-    (219, 120, 13),    # Channel 6: Orange
-    (196, 0, 0),      # Channel 7: Red
-    (107, 54, 29)     # Channel 8: Brown
+	(120, 120, 120),  # Channel 1: Gray
+	(129, 37, 186),    # Channel 2: Purple  
+	(19, 26, 120),      # Channel 3: Blue
+	(24, 168, 101),      # Channel 4: Green
+	(196, 187, 16),    # Channel 5: Yellow
+	(219, 120, 13),    # Channel 6: Orange
+	(196, 0, 0),      # Channel 7: Red
+	(107, 54, 29)     # Channel 8: Brown
 ]
 
 # Legacy string color names for backward compatibility
@@ -411,56 +411,94 @@ class BCIBoard:
 		return results
 
 class CloudConnection:
-    def __init__(self, host="ftp.yourdomain.com", user="yourusername", password="yourpassword", timeout=10):
-        self.host = host
-        self.user = user
-        self.password = password
-        self.timeout = timeout
-        self.ftp = None
-        
-    def connect(self):
-        try:
-            self.ftp = FTP(self.host, timeout=self.timeout)
-            self.ftp.login(self.user, self.password)
-        except Exception as e:
-            raise Exception(f"Failed to connect to cloud: {e}")
-        return True
-    
-    def folder_exists(self, user_id):
-        try:
-            self.ftp.cwd("home/File-EXTERNAL/B2J/Training_Data/" + user_id)
-        except Exception as e:
-            raise Exception(f"Failed to check if user folder exists: {e}")
-        return True
-    
-    def create_user_folder(self, user_id):
-        try:
-            self.ftp.mkd("home/File-EXTERNAL/B2J/Training_Data/" + user_id)
-        except Exception as e:
-            raise Exception(f"Failed to create user folder: {e}")
-        return True
-    
-    def count_files_in_folder(self, user_id):
-        try:
-            self.ftp.cwd("home/File-EXTERNAL/B2J/Training_Data/" + user_id)
-            return len(self.ftp.nlst())
-        except Exception as e:
-            raise Exception(f"Failed to count files in user folder: {e}")
-        return 0
-    
-    def upload_file(self, local_path, remote_path):
-        try:
-            self.ftp.storbinary(f"STOR {remote_path}", open(local_path, "rb"))
-        except Exception as e:
-            raise Exception(f"Failed to upload file to cloud: {e}")
-        return True
-    
-    def download_file(self, remote_path, local_path):
-        try:
-            self.ftp.retrbinary(f"RETR {remote_path}", open(local_path, "wb"))
-        except Exception as e:
-            raise Exception(f"Failed to download file from cloud: {e}")
-        return True
+	def __init__(self, host="ftp.yourdomain.com", user="yourusername", password="yourpassword", timeout=10):
+		self.host = host
+		self.user = user
+		self.password = password
+		self.timeout = timeout
+		self.ftp = None
+		
+	def connect(self):
+		try:
+			self.ftp = FTP(self.host, timeout=self.timeout)
+			self.ftp.login(self.user, self.password)
+		except Exception as e:
+			raise Exception(f"Failed to connect to cloud: {e}")
+		return True
+	
+	def folder_exists(self, user_id):
+		if self.ftp is None:
+			self.connect()
+		folder_path = ("/home/File-EXTERNAL/B2J/Training_Data/" + user_id)
+		try:
+			self.ftp.cwd(folder_path)
+			return True
+		except error_perm:
+			return False
+		except Exception as e:
+			print(f"Failed to check folder: {e}")
+			return False
+	
+	def create_user_folder(self, user_id):
+		if self.ftp is None:
+			self.connect()
+		try:
+			self.ftp.mkd("/home/File-EXTERNAL/B2J/Training_Data/" + user_id)
+		except error_perm as e:
+			raise Exception(f"Failed to create user folder: {e}")
+		except Exception as e:
+			raise Exception(f"Failed to create user folder: {e}")
+		return True
+	
+	def count_files_in_folder(self, user_id):
+		try:
+			self.ftp.cwd(f"/home/File-EXTERNAL/B2J/Training_Data/{user_id}/")
+			return len(self.ftp.nlst())
+		except Exception as e:
+			raise Exception(f"Failed to count files in user folder: {e}")
+		return 0
+	
+	def upload_all_files(self, user_id, local_root="BMI Trainer Data"):
+		if self.ftp is None:
+			self.connect()
+
+		base_path = Path(local_root)
+		if not base_path.exists():
+			raise FileNotFoundError(f"Local directory '{local_root}' does not exist.")
+
+		session_dirs = [
+			p for p in base_path.iterdir()
+			if p.is_dir() and p.name.startswith(user_id)
+		]
+		
+		if not session_dirs:
+			print(f"No session folders found for user {user_id} in {local_root}")
+			return 0
+		
+		remote_base = f"/home/File-EXTERNAL/B2J/Training_Data/{user_id}"
+		try:
+			self.ftp.cwd(remote_base)
+		except error_perm:
+			print(f"User folder {remote_base} does not exist, creating...")
+			self.create_user_folder(user_id)
+			self.ftp.cwd(remote_base)
+		except Exception as e:
+			print(f"Failed to change directory to {remote_base}: {e}")
+			return 0
+
+		files_uploaded = 0
+		for session_dir in session_dirs:
+			for file_path in session_dir.rglob("*"):
+				if not file_path.is_file():
+					continue
+				flattened = "__".join([session_dir.name] + list(file_path.relative_to(session_dir).parts))
+				try:
+					with open(file_path, "rb") as fh:
+						self.ftp.storbinary(f"STOR {flattened}", fh)
+					files_uploaded += 1
+				except Exception as err:
+					print(f"Failed to upload {file_path}: {err}")
+		return files_uploaded
 
 def set_ads_to_impedance_on(board, ch: int):
 	"""
@@ -667,13 +705,13 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 				scheduled_time = start_time + stim_idx * (ISI + SOUND_LENGTH)
 				while time.time() < scheduled_time:
 					time.sleep(0.0005)
-              
+			  
 				if cancel_event.is_set():
 					break
  
 				board.stimulus_sound = sound
 				board.sequence_id = id
-    
+	
 				if sound == 1:
 					play_single_sound("Sounds/beep_left.wav", block=True)
 				elif sound == 2:
@@ -729,27 +767,27 @@ def getUserID(filepath="BMI Trainer Data/UserID.txt"):
 	return user_id
 
 def generateSequence():
-    """
-    Generates non-repeating order of sounds to play (Left,Center,Right,Silent), and corresponding sequence id
-    """
-    
-    stimulation_sequence = []
-    sequence_ids = []
-    prev_stim = None
-    
-    #Modifiable
-    numSequences=10
-    playableIDs = [1,2,3,4]
-    
-    for set_idx in range(numSequences):
-        stim_order = random.sample(playableIDs, len(playableIDs))
-        while prev_stim is not None and stim_order[0] == prev_stim:
-            stim_order = random.sample(playableIDs, len(playableIDs))
-        prev_stim = stim_order[-1]
-        stimulation_sequence.extend(stim_order)
-        sequence_ids.extend([set_idx + 1] * len(stim_order))
-        
-    return stimulation_sequence, sequence_ids
+	"""
+	Generates non-repeating order of sounds to play (Left,Center,Right,Silent), and corresponding sequence id
+	"""
+	
+	stimulation_sequence = []
+	sequence_ids = []
+	prev_stim = None
+	
+	#Modifiable
+	numSequences=10
+	playableIDs = [1,2,3,4]
+	
+	for set_idx in range(numSequences):
+		stim_order = random.sample(playableIDs, len(playableIDs))
+		while prev_stim is not None and stim_order[0] == prev_stim:
+			stim_order = random.sample(playableIDs, len(playableIDs))
+		prev_stim = stim_order[-1]
+		stimulation_sequence.extend(stim_order)
+		sequence_ids.extend([set_idx + 1] * len(stim_order))
+		
+	return stimulation_sequence, sequence_ids
 
 def countRecordings(user_id, base_folder="BMI Trainer Data/"):
 	"""Count left/center/right recordings for a user across session folders."""
