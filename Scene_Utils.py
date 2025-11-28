@@ -653,6 +653,14 @@ class UploadToCloudScene(Scene):
 		self.cloudUser = "ext_guest"
 		self.cloudPassword = "GuestMoonshot01"
 		self.status_message = ""
+		self.uploading = False
+		self.upload_thread = None
+
+		# Spinner config (matches other scenes)
+		self.spinner_angle = 0
+		self.spinner_radius = 18
+		self.spinner_center = (self.app.render_w - 40, self.app.render_h - 40)
+		self.spinner_speed = -2
 
 		self.add_button("← Trainer", 15, 150, 140, 70, self.go_back, font_size=22, color=cool_blue)
 		self.add_button("Upload", 170, 140, 120, 90, self.upload_action, font_size=26, color=soft_green)
@@ -670,6 +678,7 @@ class UploadToCloudScene(Scene):
 
 	def on_enter(self):
 		self.status_message = ""
+		self.uploading = False
 		if not self.cloudConnection:
 			try:
 				self.cloudConnection = ABMI_Utils.CloudConnection(self.cloudIP, self.cloudUser, self.cloudPassword)
@@ -681,10 +690,10 @@ class UploadToCloudScene(Scene):
 				self.isConnected = False
 		if self.cloudConnection:
 			try:
-				if not self.cloudConnection.folder_exists(self.app.user_id):
-					print('not found')
-					self.cloudConnection.create_user_folder(self.app.user_id)
-				self.cloudDataCount = self.cloudConnection.count_files_in_folder(self.app.user_id)
+				if not self.cloudConnection.folder_exists("/Training_Data/" + self.app.user_id):
+					print('User Folder not found, creating user folder for ' + str(self.app.user_id))
+					self.cloudConnection.create_user_folder("/Training_Data/" + self.app.user_id)
+				self.cloudDataCount = self.cloudConnection.count_files_in_folder("/Training_Data/" + self.app.user_id)
 				self.status_message = ""
 			except Exception as err:
 				print(f"Failed to refresh cloud data count: {err}")
@@ -699,18 +708,27 @@ class UploadToCloudScene(Scene):
 		if not self.cloudConnection:
 			self.status_message = "Not connected to cloud"
 			return
+		if self.uploading:
+			return
+		self.uploading = True
+		self.status_message = "Uploading..."
+		self.upload_thread = threading.Thread(target=self._run_upload, daemon=True)
+		self.upload_thread.start()
+
+	def _run_upload(self):
 		try:
-			files_uploaded = self.cloudConnection.upload_all_files(self.app.user_id, local_root="BMI Trainer Data")
+			files_uploaded = self.cloudConnection.upload_all_files(remote_root="/Training_Data/" + self.app.user_id, user_id=self.app.user_id, local_root="BMI Trainer Data")
 			print(f"Uploaded {files_uploaded} files to cloud.")
+			self.cloudDataCount = self.cloudConnection.count_files_in_folder("/Training_Data/" + self.app.user_id)
 			self.status_message = "Upload complete!" if files_uploaded else "No files to upload"
-			
-			self.cloudDataCount = self.cloudConnection.count_files_in_folder(self.app.user_id)
 		except Exception as err:
 			print(f"Upload failed: {err}")
 			self.status_message = "Upload failed"
+		finally:
+			self.uploading = False
 
 	def go_forward(self):
-		print("Forward scene placeholder - scene not implemented yet")
+		self.app.switch_scene("download_from_cloud")
 
 	def handle_events(self, event):
 		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -720,7 +738,8 @@ class UploadToCloudScene(Scene):
 					btn["callback"]()
 
 	def update(self):
-		pass
+		if self.uploading:
+			self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
 
 	def draw(self, surface):
 		surface.fill(white)
@@ -737,12 +756,154 @@ class UploadToCloudScene(Scene):
 		status_rect = status_surface.get_rect(center=(surface.get_width() // 2, surface.get_height() - 30))
 		surface.blit(status_surface, status_rect)
 
+		if self.uploading:
+			num_lines = 12
+			for i in range(num_lines):
+				angle_deg = (360 / num_lines) * i + self.spinner_angle
+				angle_rad = math.radians(angle_deg)
+				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
 		for btn in self.buttons:
 			pygame.draw.rect(surface, btn["color"], btn["rect"])
 			pygame.draw.rect(surface, black, btn["rect"], 3)
 			text_surface = btn["font"].render(btn["text"], True, black)
 			text_rect = text_surface.get_rect(center=btn["rect"].center)
 			surface.blit(text_surface, text_rect)
+
+# --- Download From Cloud Scene ---
+class DownloadFromCloudScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.app = app
+		self.title_font = pygame.font.Font(notoFont, 28)
+		self.status_font = pygame.font.Font(notoFont, 24)
+		self.message_font = pygame.font.Font(notoFont, 20)
+		self.buttons = []
+		self.cloudConnection = None
+		self.cloudIP = "131.113.139.72"
+		self.cloudUser = "ext_guest"
+		self.cloudPassword = "GuestMoonshot01"
+		self.model_available = False
+		self.availability_message = "Checking..."
+		self.bottom_message = ""
+		self.downloading = False
+		self.download_thread = None
+
+		self.spinner_angle = 0
+		self.spinner_radius = 18
+		self.spinner_center = (self.app.render_w - 40, self.app.render_h - 40)
+		self.spinner_speed = -2
+
+		self.add_button("← Upload", 15, 150, 140, 70, self.go_upload, font_size=22, color=cool_blue)
+		self.add_button("Download", 170, 140, 140, 90, self.download_action, font_size=24, color=soft_green)
+		self.add_button("Test →", 325, 150, 140, 70, self.test_action, font_size=22, color=warning_orange)
+
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
+		}
+		self.buttons.append(button)
+
+	def ensure_connection(self):
+		if not self.cloudConnection:
+			try:
+				self.cloudConnection = ABMI_Utils.CloudConnection(self.cloudIP, self.cloudUser, self.cloudPassword)
+				self.cloudConnection.connect()
+			except Exception as err:
+				print(f"Cloud connection failed: {err}")
+				self.cloudConnection = None
+
+	def on_enter(self):
+		self.bottom_message = ""
+		self.downloading = False
+		self.ensure_connection()
+		if not self.cloudConnection:
+			self.availability_message = "Unable to connect"
+			self.model_available = False
+			return
+		try:
+			count = self.cloudConnection.count_files_in_folder("/Models/" + self.app.user_id)
+			self.model_available = count > 0
+			self.availability_message = "Model Available" if self.model_available else "No Model Available"
+		except Exception as err:
+			print(f"Failed to query cloud data: {err}")
+			self.availability_message = "Failed to load"
+			self.model_available = False
+
+	def go_upload(self):
+		self.app.switch_scene("upload_to_cloud")
+
+	def download_action(self):
+		if not self.cloudConnection:
+			self.bottom_message = "Not connected to cloud"
+			return
+		if self.downloading:
+			return
+		self.downloading = True
+		self.bottom_message = "Downloading..."
+		self.download_thread = threading.Thread(target=self._run_download, daemon=True)
+		self.download_thread.start()
+
+	def _run_download(self):
+		try:
+			# Placeholder for future download logic
+			self.cloudConnection.download_all_files(remote_root="/Models/" + self.app.user_id, local_root="Model/")
+			self.bottom_message = "Download Complete"
+		except Exception as err:
+			print(f"Download failed: {err}")
+			self.bottom_message = "Download failed"
+		finally:
+			self.downloading = False
+
+	def test_action(self):
+		print("Test action placeholder")
+
+	def handle_events(self, event):
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					btn["callback"]()
+
+	def update(self):
+		if self.downloading:
+			self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+
+	def draw(self, surface):
+		surface.fill(white)
+		title_surface = self.title_font.render("Download From Cloud", True, black)
+		title_rect = title_surface.get_rect(center=(surface.get_width() // 2, 60))
+		surface.blit(title_surface, title_rect)
+
+		status_surface = self.status_font.render(self.availability_message, True, black)
+		status_rect = status_surface.get_rect(center=(surface.get_width() // 2, 100))
+		surface.blit(status_surface, status_rect)
+
+		for btn in self.buttons:
+			pygame.draw.rect(surface, btn["color"], btn["rect"])
+			pygame.draw.rect(surface, black, btn["rect"], 3)
+			text_surface = btn["font"].render(btn["text"], True, black)
+			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			surface.blit(text_surface, text_rect)
+
+		bottom_surface = self.message_font.render(self.bottom_message, True, black)
+		bottom_rect = bottom_surface.get_rect(center=(surface.get_width() // 2, surface.get_height() - 30))
+		surface.blit(bottom_surface, bottom_rect)
+
+		if self.downloading:
+			num_lines = 12
+			for i in range(num_lines):
+				angle_deg = (360 / num_lines) * i + self.spinner_angle
+				angle_rad = math.radians(angle_deg)
+				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
 
 # --- Single Collection ---
 class CollectDataSingleScene(Scene):
@@ -953,6 +1114,7 @@ class BMITrainer:
 			"impedance_results_single": ImpedanceResultsSingleScene(self),
 			"trainer": TrainerScene(self),
 			"upload_to_cloud": UploadToCloudScene(self),
+			"download_from_cloud": DownloadFromCloudScene(self),
 			"collect_data_single": CollectDataSingleScene(self),
 			"emergency": EmergencyDisconnectedScene(self)
 		}
