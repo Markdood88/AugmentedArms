@@ -644,6 +644,7 @@ class UploadToCloudScene(Scene):
 		self.app = app
 		self.title_font = pygame.font.Font(notoFont, 28)
 		self.count_font = pygame.font.Font(notoFont, 24)
+		self.status_font = pygame.font.Font(notoFont, 20)
 		self.buttons = []
 		self.cloudConnection = None
 		self.isConnected = False
@@ -651,6 +652,7 @@ class UploadToCloudScene(Scene):
 		self.cloudIP = "131.113.139.72"
 		self.cloudUser = "ext_guest"
 		self.cloudPassword = "GuestMoonshot01"
+		self.status_message = ""
 
 		self.add_button("← Trainer", 15, 150, 140, 70, self.go_back, font_size=22, color=cool_blue)
 		self.add_button("Upload", 170, 140, 120, 90, self.upload_action, font_size=26, color=soft_green)
@@ -667,29 +669,45 @@ class UploadToCloudScene(Scene):
 		self.buttons.append(button)
 
 	def on_enter(self):
-		if self.isConnected is False:
+		self.status_message = ""
+		if not self.cloudConnection:
 			try:
 				self.cloudConnection = ABMI_Utils.CloudConnection(self.cloudIP, self.cloudUser, self.cloudPassword)
 				self.cloudConnection.connect()
-			except TypeError as err:
-				print(f"Cloud connection failed to initialize: {err}")
-				self.cloudConnection = None
-				self.isConnected = False
-			except Exception as err:
-				print(f"Error while connecting to cloud: {err}")
-				self.cloudConnection = None
-				self.isConnected = False
-		if self.isConnected:
-			if not self.cloudConnection.folder_exists(self.app.user_id):
-				self.cloudConnection.create_user_folder(self.app.user_id)
 				self.isConnected = True
-			self.cloudDataCount = self.cloudConnection.count_files_in_folder(self.app.user_id)
+			except Exception as err:
+				print(f"Cloud connection failed: {err}")
+				self.cloudConnection = None
+				self.isConnected = False
+		if self.cloudConnection:
+			try:
+				if not self.cloudConnection.folder_exists(self.app.user_id):
+					print('not found')
+					self.cloudConnection.create_user_folder(self.app.user_id)
+				self.cloudDataCount = self.cloudConnection.count_files_in_folder(self.app.user_id)
+				self.status_message = ""
+			except Exception as err:
+				print(f"Failed to refresh cloud data count: {err}")
+				self.status_message = "Failed to load cloud count"
+				self.cloudDataCount = 0
 
 	def go_back(self):
 		self.app.switch_scene("trainer")
 
 	def upload_action(self):
-		print("Upload action pressed - awaiting implementation")
+		print("Uploading all files to cloud!")
+		if not self.cloudConnection:
+			self.status_message = "Not connected to cloud"
+			return
+		try:
+			files_uploaded = self.cloudConnection.upload_all_files(self.app.user_id, local_root="BMI Trainer Data")
+			print(f"Uploaded {files_uploaded} files to cloud.")
+			self.status_message = "Upload complete!" if files_uploaded else "No files to upload"
+			
+			self.cloudDataCount = self.cloudConnection.count_files_in_folder(self.app.user_id)
+		except Exception as err:
+			print(f"Upload failed: {err}")
+			self.status_message = "Upload failed"
 
 	def go_forward(self):
 		print("Forward scene placeholder - scene not implemented yet")
@@ -714,6 +732,10 @@ class UploadToCloudScene(Scene):
 		count_surface = self.count_font.render(f"Data Count: {self.cloudDataCount}", True, black)
 		count_rect = count_surface.get_rect(center=(surface.get_width() // 2, 100))
 		surface.blit(count_surface, count_rect)
+
+		status_surface = self.status_font.render(self.status_message, True, black)
+		status_rect = status_surface.get_rect(center=(surface.get_width() // 2, surface.get_height() - 30))
+		surface.blit(status_surface, status_rect)
 
 		for btn in self.buttons:
 			pygame.draw.rect(surface, btn["color"], btn["rect"])
