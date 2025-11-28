@@ -429,7 +429,7 @@ class CloudConnection:
 	def folder_exists(self, user_id):
 		if self.ftp is None:
 			self.connect()
-		folder_path = ("/home/File-EXTERNAL/B2J/Training_Data/" + user_id)
+		folder_path = ("/home/File-EXTERNAL/B2J" + user_id)
 		try:
 			self.ftp.cwd(folder_path)
 			return True
@@ -443,7 +443,7 @@ class CloudConnection:
 		if self.ftp is None:
 			self.connect()
 		try:
-			self.ftp.mkd("/home/File-EXTERNAL/B2J/Training_Data/" + user_id)
+			self.ftp.mkd("/home/File-EXTERNAL/B2J" + user_id)
 		except error_perm as e:
 			raise Exception(f"Failed to create user folder: {e}")
 		except Exception as e:
@@ -452,13 +452,13 @@ class CloudConnection:
 	
 	def count_files_in_folder(self, user_id):
 		try:
-			self.ftp.cwd(f"/home/File-EXTERNAL/B2J/Training_Data/{user_id}/")
+			self.ftp.cwd(f"/home/File-EXTERNAL/B2J{user_id}/")
 			return len(self.ftp.nlst())
 		except Exception as e:
 			raise Exception(f"Failed to count files in user folder: {e}")
 		return 0
 	
-	def upload_all_files(self, user_id, local_root="BMI Trainer Data"):
+	def upload_all_files(self, remote_root, user_id, local_root="BMI Trainer Data"):
 		if self.ftp is None:
 			self.connect()
 
@@ -475,7 +475,7 @@ class CloudConnection:
 			print(f"No session folders found for user {user_id} in {local_root}")
 			return 0
 		
-		remote_base = f"/home/File-EXTERNAL/B2J/Training_Data/{user_id}"
+		remote_base = f"/home/File-EXTERNAL/B2J{remote_root}"
 		try:
 			self.ftp.cwd(remote_base)
 		except error_perm:
@@ -499,6 +499,31 @@ class CloudConnection:
 				except Exception as err:
 					print(f"Failed to upload {file_path}: {err}")
 		return files_uploaded
+
+	def download_all_files(self, remote_root, local_root):
+		if self.ftp is None:
+			self.connect()
+
+		remote_base = f"/home/File-EXTERNAL/B2J{remote_root}"
+		try:
+			self.ftp.cwd(remote_base)
+		except Exception as e:
+			raise Exception(f"Failed to access remote folder '{remote_root}': {e}")
+
+		local_path = Path(local_root)
+		local_path.mkdir(parents=True, exist_ok=True)
+
+		files_downloaded = 0
+		try:
+			for filename in self.ftp.nlst():
+				local_file = local_path / filename
+				with open(local_file, "wb") as f:
+					self.ftp.retrbinary(f"RETR {filename}", f.write)
+				files_downloaded += 1
+		except Exception as e:
+			raise Exception(f"Failed to download files from '{remote_root}': {e}")
+
+		return files_downloaded
 
 def set_ads_to_impedance_on(board, ch: int):
 	"""
