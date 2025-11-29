@@ -527,6 +527,8 @@ class TrainerScene(Scene):
 		self.app.user_id = ABMI_Utils.getUserID("BMI Trainer Data/UserID.txt")
 		ABMI_Utils.deleteEmptyFolders(base_path="BMI Trainer Data/") #Delete empty folders before creating a Session Folder
 		self.app.session_Folder = ABMI_Utils.createSessionFolder(self.app.user_id, datetime.datetime.now(), base_path="BMI Trainer Data/")
+		self.app.model_Folder = ABMI_Utils.createModelFolder(base_path="Model/")
+		self.app.testing_Folder = ABMI_Utils.createTestingFolder(base_path="Testing/")
 		self.buttons = []
 
 		# Button Creation
@@ -649,9 +651,6 @@ class UploadToCloudScene(Scene):
 		self.cloudConnection = None
 		self.isConnected = False
 		self.cloudDataCount = 0
-		self.cloudIP = "131.113.139.72"
-		self.cloudUser = "ext_guest"
-		self.cloudPassword = "GuestMoonshot01"
 		self.status_message = ""
 		self.uploading = False
 		self.upload_thread = None
@@ -664,7 +663,7 @@ class UploadToCloudScene(Scene):
 
 		self.add_button("← Trainer", 15, 150, 140, 70, self.go_back, font_size=22, color=cool_blue)
 		self.add_button("Upload", 170, 140, 120, 90, self.upload_action, font_size=26, color=soft_green)
-		self.add_button("Download →", 305, 150, 160, 70, self.go_forward, font_size=22, color=warning_orange)
+		self.add_button("Download →", 305, 150, 160, 70, self.go_download, font_size=22, color=warning_orange)
 
 	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
 		button = {
@@ -681,7 +680,7 @@ class UploadToCloudScene(Scene):
 		self.uploading = False
 		if not self.cloudConnection:
 			try:
-				self.cloudConnection = ABMI_Utils.CloudConnection(self.cloudIP, self.cloudUser, self.cloudPassword)
+				self.cloudConnection = ABMI_Utils.CloudConnection(self.app.cloud_ip, self.app.cloud_user, self.app.cloud_password)
 				self.cloudConnection.connect()
 				self.isConnected = True
 			except Exception as err:
@@ -727,7 +726,7 @@ class UploadToCloudScene(Scene):
 		finally:
 			self.uploading = False
 
-	def go_forward(self):
+	def go_download(self):
 		self.app.switch_scene("download_from_cloud")
 
 	def handle_events(self, event):
@@ -782,9 +781,6 @@ class DownloadFromCloudScene(Scene):
 		self.message_font = pygame.font.Font(notoFont, 20)
 		self.buttons = []
 		self.cloudConnection = None
-		self.cloudIP = "131.113.139.72"
-		self.cloudUser = "ext_guest"
-		self.cloudPassword = "GuestMoonshot01"
 		self.model_available = False
 		self.availability_message = "Checking..."
 		self.bottom_message = ""
@@ -798,7 +794,7 @@ class DownloadFromCloudScene(Scene):
 
 		self.add_button("← Upload", 15, 150, 140, 70, self.go_upload, font_size=22, color=cool_blue)
 		self.add_button("Download", 170, 140, 140, 90, self.download_action, font_size=24, color=soft_green)
-		self.add_button("Test →", 325, 150, 140, 70, self.test_action, font_size=22, color=warning_orange)
+		self.add_button("Test →", 325, 150, 140, 70, self.go_test, font_size=22, color=warning_orange)
 
 	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
 		button = {
@@ -813,7 +809,7 @@ class DownloadFromCloudScene(Scene):
 	def ensure_connection(self):
 		if not self.cloudConnection:
 			try:
-				self.cloudConnection = ABMI_Utils.CloudConnection(self.cloudIP, self.cloudUser, self.cloudPassword)
+				self.cloudConnection = ABMI_Utils.CloudConnection(self.app.cloud_ip, self.app.cloud_user, self.app.cloud_password)
 				self.cloudConnection.connect()
 			except Exception as err:
 				print(f"Cloud connection failed: {err}")
@@ -855,14 +851,15 @@ class DownloadFromCloudScene(Scene):
 			# Placeholder for future download logic
 			self.cloudConnection.download_all_files(remote_root="/Models/" + self.app.user_id, local_root="Model/")
 			self.bottom_message = "Download Complete"
+			print("Successfully downloaded model from cloud.")
 		except Exception as err:
 			print(f"Download failed: {err}")
 			self.bottom_message = "Download failed"
 		finally:
 			self.downloading = False
 
-	def test_action(self):
-		print("Test action placeholder")
+	def go_test(self):
+		self.app.switch_scene("model_test")
 
 	def handle_events(self, event):
 		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -897,6 +894,205 @@ class DownloadFromCloudScene(Scene):
 		surface.blit(bottom_surface, bottom_rect)
 
 		if self.downloading:
+			num_lines = 12
+			for i in range(num_lines):
+				angle_deg = (360 / num_lines) * i + self.spinner_angle
+				angle_rad = math.radians(angle_deg)
+				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
+# --- Model Test Scene ---
+class ModelTestScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.app = app
+		self.title_font = pygame.font.Font(notoFont, 28)
+		self.status_font = pygame.font.Font(notoFont, 22)
+		self.buttons = []
+		self.state = "idle"  # idle, collecting, confirm, label
+		self.bottom_message = ""
+		self.is_collecting = False
+		self.sequence_thread = None
+		self.sequence_stop_event = None
+		self.latest_test_file = None
+
+		self.spinner_angle = 0
+		self.spinner_radius = 18
+		self.spinner_center = (self.app.render_w - 40, self.app.render_h - 40)
+		self.spinner_speed = -2
+
+		self.configure_buttons()
+
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
+		}
+		self.buttons.append(button)
+
+	def configure_buttons(self):
+		self.buttons = []
+		if self.state == "idle":
+			self.add_button("← Download", 25, 160, 170, 70, self.go_back, font_size=22, color=cool_blue)
+			self.add_button("Begin", 210, 145, 160, 100, self.begin_action, font_size=30, color=soft_green)
+		elif self.state == "collecting":
+			self.add_button("Cancel", 165, 160, 150, 70, self.cancel_action, font_size=26, color=light_red)
+		elif self.state == "confirm":
+			self.add_button("No", 60, 170, 140, 80, self.discard_action, font_size=26, color=light_red)
+			self.add_button("Yes", 260, 170, 160, 80, self.save_action, font_size=26, color=soft_green)
+		elif self.state == "label":
+			self.add_button("Left", 20, 165, 130, 80, lambda: self.label_action(1), font_size=24, color=white)
+			self.add_button("Center", 175, 165, 130, 80, lambda: self.label_action(2), font_size=24, color=white)
+			self.add_button("Right", 330, 165, 130, 80, lambda: self.label_action(3), font_size=24, color=white)
+
+	def set_state(self, new_state):
+		self.state = new_state
+		if new_state == "idle":
+			self.is_collecting = False
+			self.sequence_thread = None
+			self.sequence_stop_event = None
+			if not self.bottom_message.startswith("Saved"):
+				self.bottom_message = ""
+		elif new_state == "collecting":
+			self.is_collecting = True
+			self.bottom_message = "Collecting data"
+		elif new_state == "confirm":
+			self.is_collecting = False
+			self.bottom_message = ""
+		elif new_state == "label":
+			self.is_collecting = False
+			self.bottom_message = ""
+		self.configure_buttons()
+
+	def go_back(self):
+		if self.state == "collecting":
+			return
+		self.app.switch_scene("download_from_cloud")
+
+	def begin_action(self):
+		if self.state != "idle" or self.is_collecting:
+			return
+		board = getattr(self.app, "bciboard", None)
+		if board is None:
+			self.bottom_message = "No BCIBoard available"
+			return
+		if not getattr(board, "connected", False):
+			self.bottom_message = "Board not connected"
+			return
+		if not getattr(board, "streaming", False):
+			try:
+				board.stream()
+			except Exception as err:
+				print(f"Failed to start board stream: {err}")
+				self.bottom_message = "Stream failed"
+				return
+
+		timestamp = datetime.datetime.now()
+		lcr_choice = 0
+		if hasattr(timestamp, 'strftime'):
+			timestamp_str = timestamp.strftime('%Y-%m-%d-%H-%M-%S')
+		else:
+			timestamp_str = str(timestamp)
+		self.latest_test_file = os.path.join(self.app.testing_Folder, f"{self.app.user_id}-{timestamp_str}-{lcr_choice}.csv")
+
+		try:
+			self.sequence_thread, self.sequence_stop_event = ABMI_Utils.startSingleTrainingSequence(
+				board, self.app.user_id, timestamp, lcr_choice, self.app.testing_Folder
+			)
+			self.set_state("collecting")
+		except Exception as err:
+			print(f"Model test failed to start: {err}")
+			self.sequence_thread = None
+			self.sequence_stop_event = None
+			self.latest_test_file = None
+			self.bottom_message = "Test failed to start"
+
+	def cancel_action(self):
+		if self.sequence_stop_event:
+			self.sequence_stop_event.set()
+		self.set_state("idle")
+		self.bottom_message = "Test cancelled"
+
+	def discard_action(self):
+		ABMI_Utils.deleteTestingFiles(base_path=self.app.testing_Folder)
+		self.latest_test_file = None
+		self.set_state("idle")
+		self.bottom_message = "Data discarded"
+
+	def save_action(self):
+		self.set_state("label")
+
+	def label_action(self, lcr_value):
+		if not self.latest_test_file:
+			self.bottom_message = "No test file to save"
+			self.set_state("idle")
+			return
+
+		label_map = {1: "Left", 2: "Center", 3: "Right"}
+		label_text = label_map.get(lcr_value, "Unknown")
+		try:
+			ABMI_Utils.labelTestingFile(self.latest_test_file, self.app.session_Folder, lcr_value)
+			self.bottom_message = f"Saved: {label_text}"
+		except Exception as err:
+			print(f"Failed to label testing file: {err}")
+			self.bottom_message = "Save failed"
+		self.latest_test_file = None
+		self.set_state("idle")
+
+	def handle_events(self, event):
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					btn["callback"]()
+
+	def update(self):
+		if self.is_collecting:
+			self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+		if self.sequence_thread and not self.sequence_thread.is_alive():
+			self.sequence_thread = None
+			self.sequence_stop_event = None
+			self.set_state("confirm")
+
+	def draw(self, surface):
+		surface.fill(white)
+		if self.state == "confirm":
+			title = "Would you like to save this data?"
+		elif self.state == "label":
+			title = "Please label this data"
+		else:
+			title = "Test Current Model"
+
+		title_surface = self.title_font.render(title, True, black)
+		title_rect = title_surface.get_rect(center=(surface.get_width() // 2, 60))
+		surface.blit(title_surface, title_rect)
+
+		if self.state == "confirm":
+			description = "No: Delete file.   Yes: Label Data"
+		elif self.state == "label":
+			description = "Which direction did you choose?"
+		else:
+			description = "Successful tests can be saved."
+		desc_surface = self.status_font.render(description, True, black)
+		desc_rect = desc_surface.get_rect(center=(surface.get_width() // 2, 110))
+		surface.blit(desc_surface, desc_rect)
+
+		for btn in self.buttons:
+			pygame.draw.rect(surface, btn["color"], btn["rect"])
+			pygame.draw.rect(surface, black, btn["rect"], 3)
+			text_surface = btn["font"].render(btn["text"], True, black)
+			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			surface.blit(text_surface, text_rect)
+
+		bottom_surface = self.status_font.render(self.bottom_message, True, black)
+		bottom_rect = bottom_surface.get_rect(center=(surface.get_width() // 2, surface.get_height() - 30))
+		surface.blit(bottom_surface, bottom_rect)
+
+		if self.is_collecting:
 			num_lines = 12
 			for i in range(num_lines):
 				angle_deg = (360 / num_lines) * i + self.spinner_angle
@@ -1104,7 +1300,14 @@ class BMITrainer:
 		self.current_cable_result = None
 		self.user_id = None
 		self.session_Folder = None
+		self.model_Folder = None
+		self.testing_Folder = None
 		self.recording_lcr_counts = None
+  
+		#TCP credentials
+		self.cloud_ip = "131.113.139.72"
+		self.cloud_user = "ext_guest"
+		self.cloud_password = "GuestMoonshot01"
 
 		# Scenes
 		self.scenes = {
@@ -1115,6 +1318,7 @@ class BMITrainer:
 			"trainer": TrainerScene(self),
 			"upload_to_cloud": UploadToCloudScene(self),
 			"download_from_cloud": DownloadFromCloudScene(self),
+			"model_test": ModelTestScene(self),
 			"collect_data_single": CollectDataSingleScene(self),
 			"emergency": EmergencyDisconnectedScene(self)
 		}
