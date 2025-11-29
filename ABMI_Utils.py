@@ -634,6 +634,18 @@ def createSessionFolder(user_id, timestamp, base_path="BMI Trainer Data/"):
 		os.makedirs(full_path)
 	return full_path
 
+def createModelFolder(base_path="Model/"):
+	base_dir = os.path.abspath(base_path)
+	if not os.path.isdir(base_dir):
+		os.makedirs(base_dir, exist_ok=True)
+	return base_dir
+
+def createTestingFolder(base_path="Testing/"):
+	base_dir = os.path.abspath(base_path)
+	if not os.path.isdir(base_dir):
+		os.makedirs(base_dir, exist_ok=True)
+	return base_dir
+
 def deleteEmptyFolders(base_path="BMI Trainer Data/"):
 	"""Remove subdirectories under base_path that contain no files."""
 	base_dir = Path(base_path).expanduser().resolve()
@@ -670,10 +682,10 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 	if len(user_id) != 9 or not user_id.isdigit():
 		raise ValueError('user_id must be a 9-digit string')
 
-	if lcr_value not in (1, 2, 3):
-		raise ValueError('lcr_value must be 1 (left), 2 (center), or 3 (right)')
+	if lcr_value not in (0, 1, 2, 3):
+		raise ValueError('lcr_value must be 0(testing), 1 (left), 2 (center), or 3 (right)')
 
-	direction_map = {1: "left", 2: "center", 3: "right"}
+	direction_map = {0: "testing", 1: "left", 2: "center", 3: "right"}
 	direction = direction_map[lcr_value]
 
 	base_dir = Path(base_path).expanduser().resolve()
@@ -705,9 +717,18 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 			if cancel_event.is_set():
 				return
 
-			for _ in range(3): #3 Beeps
-				play_single_sound(beep_path, block=True)
-				time.sleep(ISI)
+			if lcr_value == 0: #Testing Mode< one of each beep.
+				play_single_sound("Sounds/beep_left.wav", block=True)
+				time.sleep(.5)
+				play_single_sound("Sounds/beep_center.wav", block=True)
+				time.sleep(.5)
+				play_single_sound("Sounds/beep_right.wav", block=True)
+				time.sleep(.5)
+				
+			else:
+				for _ in range(3): #3 Beeps
+					play_single_sound(beep_path, block=True)
+					time.sleep(ISI)
 
 			if cancel_event.is_set():
 				return
@@ -914,3 +935,49 @@ def deleteMostRecent(base_path="BMI Trainer Data/"):
 	except Exception as exc:
 		print(f"[deleteMostRecent] Failed to delete {most_recent_path}: {exc}")
 		return False
+
+def deleteTestingFiles(base_path="Testing/"):
+	"""Delete all files under the testing directory."""
+	base_dir = Path(base_path).expanduser().resolve()
+	if not base_dir.exists():
+		print(f"[deleteTestingFiles] Testing path not found: {base_dir}")
+		return False
+
+	deleted = False
+	for item in base_dir.glob("*"):
+		try:
+			if item.is_file():
+				item.unlink()
+				deleted = True
+			elif item.is_dir():
+				shutil.rmtree(item)
+				deleted = True
+		except Exception as exc:
+			print(f"[deleteTestingFiles] Failed to delete {item}: {exc}")
+	return deleted
+
+def labelTestingFile(test_file, session_folder, lcr_value):
+	"""
+	Rename a testing file by replacing the trailing class label with the provided lcr_value
+	and move it into the given session folder.
+	"""
+	if lcr_value not in (1, 2, 3):
+		raise ValueError("lcr_value must be 1 (Left), 2 (Center), or 3 (Right)")
+
+	test_path = Path(test_file).expanduser().resolve()
+	if not test_path.exists() or not test_path.is_file():
+		raise FileNotFoundError(f"Testing file not found: {test_path}")
+
+	session_dir = Path(session_folder).expanduser().resolve()
+	session_dir.mkdir(parents=True, exist_ok=True)
+
+	name_parts = test_path.stem.split('-')
+	if not name_parts:
+		raise ValueError(f"Unexpected testing filename format: {test_path.name}")
+
+	name_parts[-1] = str(lcr_value)
+	new_name = '-'.join(name_parts) + test_path.suffix
+	target_path = session_dir / new_name
+
+	shutil.move(str(test_path), str(target_path))
+	return target_path
