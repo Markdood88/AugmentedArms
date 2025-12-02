@@ -19,12 +19,17 @@ import pygame
 import shutil
 import queue
 import datetime
+import joblib
+import pandas as pd
 
 from pathlib import Path
 from scipy.signal import iirfilter, filtfilt
 from pyOpenBCI import OpenBCICyton
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds, BrainFlowError
 from ftplib import FTP, error_perm, all_errors
+from scipy.signal import firwin, lfilter
+from scipy.signal import filtfilt
+from sklearn.preprocessing import StandardScaler
 
 # --- Constants ---
 SERIES_R = 2200.0			# Series resistance (2.2 kΩ)
@@ -981,3 +986,171 @@ def labelTestingFile(test_file, session_folder, lcr_value):
 
 	shutil.move(str(test_path), str(target_path))
 	return target_path
+
+#Ogino Model Functions
+
+def useModelToPredict(test_file_path, model_folder="Model/"):
+	"""
+	Use the model to predict the label of the given file.
+	"""
+ 
+	model_path = os.path.join(model_folder, "model.pkl")
+ 
+	# モデルとスケーラーをロード
+	svm = joblib.load(model_path)
+	
+	# 特徴量を抽出
+	features = process_file(test_file_path)
+		
+	# 予測を実行
+	predictions = svm.predict(features)
+	return int(predictions[0])
+
+def process_file(file_path, use_mean_features=True):
+	# データ処理と特徴量抽出を行う関数
+	original_sampling_rate = 250
+	numtaps = 11
+	
+	# CSVファイルを読み込む
+	data = pd.read_csv(file_path).values
+	
+	# 刺激ラベルの列を取得
+	stimulus_labels = data[:, 9]
+	
+	# NaNをゼロに置き換え（または適切な値に置き換え）
+	stimulus_labels = np.nan_to_num(stimulus_labels, nan=0)
+	
+	# 刺激オンセットのインデックスを取得
+	stimulus_onsets = np.where(np.diff(stimulus_labels) != 0)[0] + 1
+	stimulus_onsets = stimulus_onsets[stimulus_labels[stimulus_onsets] != 0]
+	
+	# 刺激ラベルの0を削除し、連続するものを1つにする
+	processed_stimulus_labels = stimulus_labels[stimulus_labels != 0]
+	processed_stimulus_labels = np.concatenate(([processed_stimulus_labels[0]], processed_stimulus_labels[1:][processed_stimulus_labels[1:] != processed_stimulus_labels[:-1]]))
+	
+	# 脳波データ（ch5列目のみ）を取得
+	# バンドパスフィルタの設計
+	nyquist_rate = original_sampling_rate / 2
+	low_cutoff = 0.5/ nyquist_rate
+	high_cutoff = 30 / nyquist_rate
+	b = firwin(numtaps, [low_cutoff, high_cutoff], pass_zero=False)
+	
+	# EEGデータを取得（多極対応）
+	eeg_data = data[:, [i for i, col in enumerate(pd.read_csv(file_path, nrows=0).columns) if "Ch" in col]]*-1
+				
+	eeg_data = StandardScaler().fit_transform(eeg_data)
+
+	# フィルタリング方法を選択
+	use_filter = "filtfilt"  # Options: "filtfilt", "lfilter", or None
+
+	if use_filter == "filtfilt":
+		# フィルタを適用 (filtfiltで遅延をなくす)
+		eeg_data = filtfilt(b, 1.0, eeg_data, axis=0)
+	elif use_filter == "lfilter":
+		# フィルタを適用 (lfilter)
+		eeg_data = lfilter(b, 1.0, eeg_data, axis=0)
+	elif use_filter is None:
+		# フィルタを適用しない
+		pass
+		
+	# エポック毎のERPを計算
+	erp_epochs, pure_erp_epochs = compute_erp(eeg_data, stimulus_onsets)
+	
+	features = []
+	if use_mean_features:
+		# 刺激ラベルが1と3のエポックを分ける
+		erp_label_1 = erp_epochs[stimulus_labels[stimulus_onsets] == 1]
+		erp_label_2 = erp_epochs[stimulus_labels[stimulus_onsets] == 2]
+		erp_label_3 = erp_epochs[stimulus_labels[stimulus_onsets] == 3]
+		
+		# 平均を計算
+		mean_erp_label_1 = np.mean(erp_label_1, axis=0)
+		mean_erp_label_2 = np.mean(erp_label_2, axis=0)
+		mean_erp_label_3 = np.mean(erp_label_3, axis=0)
+		
+		# 差を計算して特徴量に追加
+		if(0):
+			diff_erp = (mean_erp_label_1 - mean_erp_label_3).flatten()
+		
+		# 各音に対する特徴量を統合
+		if(1):
+			diff_erp = np.concatenate((mean_erp_label_1.flatten(), mean_erp_label_2.flatten(), mean_erp_label_3.flatten()))
+
+		# 刺激ラベルを特徴量に追加
+		if(0):
+			diff_erp = np.concatenate((diff_erp, processed_stimulus_labels[:len(diff_erp)]))
+
+		features.append(diff_erp)
+
+	else:
+		# 刺激ラベルが1と3のエポックを分ける
+		erp_label_1 = erp_epochs[stimulus_labels[stimulus_onsets] == 1]
+		erp_label_3 = erp_epochs[stimulus_labels[stimulus_onsets] == 3]
+		
+		# 各エポックの電極平均を計算して特徴量に追加
+		for epoch_1, epoch_3 in zip(erp_label_1, erp_label_3):
+			mean_epoch_1 = np.mean(epoch_1, axis=1)  # 電極平均
+			mean_epoch_3 = np.mean(epoch_3, axis=1)  # 電極平均
+			concatenated_erp = np.concatenate((
+				mean_epoch_1.flatten(), 
+				mean_epoch_3.flatten()
+			))
+			features.append(concatenated_erp)
+	
+	return np.vstack(features)
+
+def compute_erp(data, stimulus_onsets):
+	window_size = 250
+	downsampling_rate = 25
+	diff_downsampling_rate = 25
+	fir_delay = 0
+	
+	downsampling_factor = window_size // downsampling_rate
+	diff_downsampling_factor = window_size // diff_downsampling_rate
+	erp = []
+	features = []
+	for onset in stimulus_onsets:
+		if onset + window_size <= data.shape[0]:
+			# ベースライン区間を計算
+			baseline_start = max(0, onset - 5 - fir_delay)
+			baseline_end = onset - fir_delay
+			baseline = data[baseline_start:baseline_end].mean(axis=0)
+			segment = data[onset - fir_delay:onset + window_size - fir_delay] - baseline
+			# # 区間を平均してダウンサンプリング
+			downsampled_segment = segment.reshape(-1, downsampling_factor, segment.shape[1]).mean(axis=1)
+			
+			# diff_downsampled_segment = segment.reshape(-1, diff_downsampling_factor, segment.shape[1]).mean(axis=1)
+			
+			if False:  # 変化率特徴量を計算する場合はTrueに変更
+				# 変化率特徴量を計算
+				rate_of_change = np.diff(diff_downsampled_segment, axis=0)
+
+				# 刺激後1秒間のデータを取得
+				combined_features = np.concatenate((downsampled_segment, rate_of_change), axis=0)
+				features.append(combined_features)
+			else:
+				features.append(downsampled_segment)
+	
+	for onset in stimulus_onsets:
+		if onset + window_size <= data.shape[0]:
+			# ベースライン区間を計算
+			baseline_start = max(0, onset - 5 - fir_delay)
+			baseline_end = onset - fir_delay
+			baseline = data[baseline_start:baseline_end].mean(axis=0)
+			segment = data[onset - fir_delay:onset + window_size - fir_delay] - baseline
+			# # 区間を平均してダウンサンプリング
+			downsampled_segment = segment.reshape(-1, downsampling_factor, segment.shape[1]).mean(axis=1)
+			
+			# diff_downsampled_segment = segment.reshape(-1, diff_downsampling_factor, segment.shape[1]).mean(axis=1)
+			
+			if False:  # 変化率特徴量を計算する場合はTrueに変更
+				# 変化率特徴量を計算
+				rate_of_change = np.diff(diff_downsampled_segment, axis=0)
+
+				# 刺激後1秒間のデータを取得
+				combined_features = np.concatenate((downsampled_segment, rate_of_change), axis=0)
+				erp.append(combined_features)
+			else:
+				erp.append(downsampled_segment)
+				
+	return np.array(features), np.array(erp)
