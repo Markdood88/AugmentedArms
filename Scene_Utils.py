@@ -912,10 +912,13 @@ class ModelTestScene(Scene):
 		self.buttons = []
 		self.state = "idle"  # idle, collecting, confirm, label
 		self.bottom_message = ""
+		self.prediction_message = ""
 		self.is_collecting = False
 		self.sequence_thread = None
 		self.sequence_stop_event = None
 		self.latest_test_file = None
+		self.predicted_lcr = None
+		self.awaiting_result = False
 
 		self.spinner_angle = 0
 		self.spinner_radius = 18
@@ -955,6 +958,8 @@ class ModelTestScene(Scene):
 			self.is_collecting = False
 			self.sequence_thread = None
 			self.sequence_stop_event = None
+			self.predicted_lcr = None
+			self.awaiting_result = False
 			if not self.bottom_message.startswith("Saved"):
 				self.bottom_message = ""
 		elif new_state == "collecting":
@@ -1003,12 +1008,50 @@ class ModelTestScene(Scene):
 			self.sequence_thread, self.sequence_stop_event = ABMI_Utils.startSingleTrainingSequence(
 				board, self.app.user_id, timestamp, lcr_choice, self.app.testing_Folder
 			)
+			self.awaiting_result = True
 			self.set_state("collecting")
+
+			def _wait_and_predict():
+				self.sequence_thread.join()
+				if not self.awaiting_result:
+					return
+				self.sequence_thread = None
+				self.sequence_stop_event = None
+				if not self.latest_test_file:
+					self.bottom_message = "No test result found"
+				else:
+					try:
+						result = ABMI_Utils.useModelToPredict(self.latest_test_file, self.app.model_Folder)
+						if isinstance(result, np.ndarray):
+							result = int(result[0])
+						self.predicted_lcr = result
+						if result == -1:
+							self.prediction_message = "Prediction failed"
+							ABMI_Utils.play_single_sound("Sounds/prediction_unknown.wav")
+						else:
+							label_map = {1: "Left", 2: "Center", 3: "Right"}
+							self.prediction_message = f"Model predicted: {label_map.get(result, 'Unknown')}"
+							sound_map = {
+								1: "Sounds/prediction_left.wav",
+								2: "Sounds/prediction_center.wav",
+								3: "Sounds/prediction_right.wav"
+							}
+							ABMI_Utils.play_single_sound(sound_map.get(result, "Sounds/prediction_unknown.wav"))
+					except Exception as err:
+						print(f"Model prediction failed: {err}")
+						self.prediction_message = "Prediction error"
+						self.predicted_lcr = -1
+						ABMI_Utils.play_single_sound("Sounds/prediction_unknown.wav")
+				self.awaiting_result = False
+				self.set_state("confirm")
+
+			threading.Thread(target=_wait_and_predict, daemon=True).start()
 		except Exception as err:
 			print(f"Model test failed to start: {err}")
 			self.sequence_thread = None
 			self.sequence_stop_event = None
 			self.latest_test_file = None
+			self.awaiting_result = False
 			self.bottom_message = "Test failed to start"
 
 	def cancel_action(self):
@@ -1020,6 +1063,7 @@ class ModelTestScene(Scene):
 	def discard_action(self):
 		ABMI_Utils.deleteTestingFiles(base_path=self.app.testing_Folder)
 		self.latest_test_file = None
+		self.awaiting_result = False
 		self.set_state("idle")
 		self.bottom_message = "Data discarded"
 
@@ -1041,6 +1085,7 @@ class ModelTestScene(Scene):
 			print(f"Failed to label testing file: {err}")
 			self.bottom_message = "Save failed"
 		self.latest_test_file = None
+		self.awaiting_result = False
 		self.set_state("idle")
 
 	def handle_events(self, event):
@@ -1056,7 +1101,7 @@ class ModelTestScene(Scene):
 		if self.sequence_thread and not self.sequence_thread.is_alive():
 			self.sequence_thread = None
 			self.sequence_stop_event = None
-			self.set_state("confirm")
+			self.is_collecting = False
 
 	def draw(self, surface):
 		surface.fill(white)
@@ -1072,7 +1117,7 @@ class ModelTestScene(Scene):
 		surface.blit(title_surface, title_rect)
 
 		if self.state == "confirm":
-			description = "No: Delete file.   Yes: Label Data"
+			description = self.prediction_message
 		elif self.state == "label":
 			description = "Which direction did you choose?"
 		else:
