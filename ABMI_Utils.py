@@ -491,16 +491,25 @@ class CloudConnection:
 			print(f"Failed to change directory to {remote_base}: {e}")
 			return 0
 
+		try:
+			existing_remote_files = set(self.ftp.nlst())
+		except Exception:
+			existing_remote_files = set()
+
 		files_uploaded = 0
 		for session_dir in session_dirs:
 			for file_path in session_dir.rglob("*"):
 				if not file_path.is_file():
 					continue
 				flattened = "__".join([session_dir.name] + list(file_path.relative_to(session_dir).parts))
+				if flattened in existing_remote_files:
+					print(f"Skipping existing file on cloud: {flattened}")
+					continue
 				try:
 					with open(file_path, "rb") as fh:
 						self.ftp.storbinary(f"STOR {flattened}", fh)
 					files_uploaded += 1
+					existing_remote_files.add(flattened)
 				except Exception as err:
 					print(f"Failed to upload {file_path}: {err}")
 		return files_uploaded
