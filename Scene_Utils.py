@@ -1336,7 +1336,7 @@ class BMITrainer:
 		self.running = True
 
 		# Developer mode flags
-		self.developer_mode = True
+		self.developer_mode = False
 		self.dev_start_scene = "bci_connect"
 		self.dev_skip_bci_connect = False
 
