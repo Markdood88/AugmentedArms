@@ -5,4 +5,3 @@ BMI Trainer application on Rasp Pi 5 for ALS Patients (or anyone really) to reco
 TODO:
   -Remove local recordings on upload
   -Japanese Language switch for Trainer Scenes
-  -Automatic Label after model test
