@@ -3,5 +3,5 @@ Augmented Arms application on Rasp Pi 5 for Muto Arm animation recording and pla
 BMI Trainer application on Rasp Pi 5 for ALS Patients (or anyone really) to record brainwave activity via OpenBCI board, and train a local model for audio-stimuli based selection activity.
 
 TODO:
-  -Remove local recordings on upload
+  -Remove local recordings after upload?
   -Japanese Language switch for Trainer Scenes
