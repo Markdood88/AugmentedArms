@@ -72,6 +72,7 @@ class BCIBoard:
 		self.streaming = False
 		self._last_data_time = None
 		self._stream_thread = None
+		self._last_data_frame = None
   
 		#Recording Vars
 		self.recording = False
@@ -321,6 +322,7 @@ class BCIBoard:
 						row.append(seq if seq is not None else '')
 
 						writer.writerow(row)
+						self._last_data_frame = row #Hold it locally to be read
 						rows_written += 1
 						if rows_written % 50 == 0:
 							csvfile.flush()
