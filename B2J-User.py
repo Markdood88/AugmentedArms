@@ -164,8 +164,8 @@ def handleRecording():
 	#msg = readRecentLatestTestFile(latest_test_file)
 	#if msg is None:
 	#	return
-	#recent = str(board.board.get_board_data())
-	#sendToM5(m5_port, baud, recent)
+	recent = str(board._last_data_frame)
+	sendToM5(m5_port, baud, recent)
 	#sendToM5(m5_port, baud, msg)
 	#print(msg)
 
@@ -198,6 +198,7 @@ def handleTriggering():
 	global state, sound_map, testing_path
 
 	#Ambient activity is basically predicting:
+	#send a single message that includes the trigger keyword and a direction
 
 	#Check for Piezo Press, this single event is triggering
 	if piezo.was_pressed():
