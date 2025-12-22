@@ -20,6 +20,8 @@ import shutil
 import queue
 import datetime
 import joblib
+import glob
+import subprocess
 import pandas as pd
 
 from pathlib import Path
@@ -601,6 +603,47 @@ def send_leadoff(board, ch, p_apply, n_apply):
 	board.config_board(cmd)
 	time.sleep(0.02)
 
+def set_latency_timer(value=1, retries=3, delay=0.2):
+    # /sys/bus/usb-serial/devices/ttyUSB*/latency_timer を探す
+    paths = glob.glob("/sys/bus/usb-serial/devices/ttyUSB*/latency_timer")
+    if not paths:
+        print("⚠️ USB-serial device not found yet.")
+        return False
+
+    all_ok = True
+    for path in paths:
+        print(f"Setting latency_timer at {path} to {value}")
+        try:
+            # echo value > /sys/... の Python 版（sudo を使って書き込み）
+            subprocess.run(["sudo", "tee", path], input=(str(value) + "\n").encode(), check=True, capture_output=True)
+        except Exception as e:
+            print(f"❌ Error writing: {e}")
+            all_ok = False
+            continue
+
+        # 設定が反映されたか確認（リトライあり）
+        ok = False
+        for attempt in range(1, retries + 1):
+            try:
+                with open(path, "r") as f:
+                    current = f.read().strip()
+                if current == str(value):
+                    ok = True
+                    break
+                else:
+                    print(f"⚠️ Verification attempt {attempt}: got '{current}' (expected '{value}')")
+            except Exception as e:
+                print(f"❌ Error reading (attempt {attempt}): {e}")
+            time.sleep(delay)
+
+        if ok:
+            print(f"✅ Verified latency_timer at {path} == {value}")
+        else:
+            print(f"❌ Failed to verify latency_timer at {path} (expected {value})")
+            all_ok = False
+
+    return all_ok
+
 # ---- Mark implemented functions ---- #
 
 def play_single_sound(filepath="beep_left.wav", block=False):
@@ -696,10 +739,10 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 	if len(user_id) != 9 or not user_id.isdigit():
 		raise ValueError('user_id must be a 9-digit string')
 
-	if lcr_value not in (0, 1, 2, 3):
-		raise ValueError('lcr_value must be 0(testing), 1 (left), 2 (center), or 3 (right)')
+	if lcr_value not in (0, 1, 2, 3, 4):
+		raise ValueError('lcr_value must be 0 (testing), 1 (left), 2 (center), 3 (right), 4 (live)')
 
-	direction_map = {0: "testing", 1: "left", 2: "center", 3: "right"}
+	direction_map = {0: "testing", 1: "left", 2: "center", 3: "right", 4: "live"}
 	direction = direction_map[lcr_value]
 
 	base_dir = Path(base_path).expanduser().resolve()
@@ -731,7 +774,7 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 			if cancel_event.is_set():
 				return
 
-			if lcr_value == 0: #Testing Mode< one of each beep.
+			if lcr_value == 0 or lcr_value == 4: #Testing Mode< one of each beep.
 				play_single_sound("Sounds/beep_left.wav", block=True)
 				time.sleep(.5)
 				play_single_sound("Sounds/beep_center.wav", block=True)
@@ -747,6 +790,8 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
 			if cancel_event.is_set():
 				return
    
+			if lcr_value == 4:
+					instruction_starting = "Sounds/begin.mp3"
 			play_single_sound(instruction_starting, block=True) #Say Starting
 
 			if cancel_event.is_set():
