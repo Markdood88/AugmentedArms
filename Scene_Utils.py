@@ -230,7 +230,7 @@ class BCIConnectScene(Scene):
 			return
 			
 		try:
-			self.board = ABMI_Utils.BCIBoard(port="/dev/ttyUSB0")
+			self.board = ABMI_Utils.BCIBoard(port="/dev/bci_dongle")
 			success = self.board.connect()
 			if success:
 				self.status = "connected"
