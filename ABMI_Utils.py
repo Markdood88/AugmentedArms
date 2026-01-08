@@ -794,6 +794,9 @@ def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path)
    
 			if lcr_value == 4:
 					instruction_starting = "Sounds/begin.mp3"
+			else:
+				instruction_starting = "Sounds/instruction_starting.wav"
+			
 			play_single_sound(instruction_starting, block=True) #Say Starting
 
 			if cancel_event.is_set():
