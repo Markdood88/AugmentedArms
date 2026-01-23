@@ -36,8 +36,7 @@ from sklearn.preprocessing import StandardScaler
 # --- Constants ---
 SERIES_R = 2200.0			# Series resistance (2.2 kΩ)
 I_DRIVE = 6.0e-9			# Lead-off drive current (6 nA default)
-MEAS_SEC = 2.0				# Measurement duration in seconds
-SETTLE_SEC = 2.0			# Settling time after switching lead-off
+MEAS_SEC = 6.0				# Measurement duration in seconds
 BAND = (5, 50)				# Bandpass filter range (Hz)
 ISI = 0.35 					# Inter-Stimulus Interval in seconds
 SOUND_LENGTH = .15			# Duration of Audio
@@ -83,6 +82,14 @@ class BCIBoard:
 		self._record_file_path = None
 		self._sample_queue = queue.Queue(maxsize=1000) #Queue holds up to 4 seconds of data
 		self.minimum_recorded_rows = 5800 #20seconds x250, + 500for baseline x2
+
+		self.STREAM_CFG_DEFAULT = dict(gain=6, input_type=0, bias=1, srb2=1, srb1=0)  # reasonable "normal" preset
+		self.IMP_CFG = dict(gain=0, input_type=0, bias=1, srb2=0, srb1=0)            # GUI-like impedance preset
+
+        # Track what this app last set per channel so we can revert on toggle-off
+		self._ch_cfg = [self.STREAM_CFG_DEFAULT.copy() for _ in range(8)]
+		self._ch_last_cfg = [None for _ in range(8)]
+
 
 	def connect(self):
 		BoardShim.disable_board_logger()
@@ -389,10 +396,10 @@ class BCIBoard:
 			print(f"Measuring CH{ch} ({color})...")
 
 			try:
-				set_ads_to_impedance_on(self.board, ch)
-				send_leadoff(self.board, ch, 0, 1)  # enable lead-off
-				time.sleep(SETTLE_SEC)
-
+				self.board.stop_stream()
+				reset_to_defaults(self.board)
+				self._ch_cfg, self._ch_last_cfg = change_leadoff(self.board, ch, True, self._ch_cfg, self._ch_last_cfg, self.STREAM_CFG_DEFAULT, self.IMP_CFG)  # enable lead-off
+				self.board.start_stream()
 				self.board.get_board_data()  # clear buffer
 				time.sleep(MEAS_SEC + 0.2)
 				data = self.board.get_board_data()
@@ -402,19 +409,15 @@ class BCIBoard:
 				x_bp = bandpass_apply(x_uV, self.fs)
 				uVrms = take_recent_1s(x_bp, self.fs)
 				z_kohm = calc_impedance_from_vrms(uVrms) / 1000.0
-
 				results.append((ch, z_kohm))
 				print(f"CH{ch} ({color}): {z_kohm:.2f} kΩ")
+				self.board.stop_stream()
+				self._ch_cfg, self._ch_last_cfg = change_leadoff(self.board, ch, False, self._ch_cfg, self._ch_last_cfg, self.STREAM_CFG_DEFAULT, self.IMP_CFG)  # disable lead-off
+				self.board.start_stream()
 
 			except Exception as e:
 				results.append((ch, float('nan')))
 				print(f"Failed to measure CH{ch}: {e}")
-
-			finally:
-				try:
-					send_leadoff(self.board, ch, 0, 0)  # disable lead-off
-				except Exception:
-					pass
 
 		print("Impedance check complete.")
 		return results
@@ -543,20 +546,20 @@ class CloudConnection:
 
 		return files_downloaded
 
-def set_ads_to_impedance_on(board, ch: int):
-	"""
-	Configure ADS channel to impedance measurement mode.
-	"""
-	ads_cmd = f"x{ch}0"		# POWER_DOWN=0 (on)
-	ads_cmd += "0"			# GAIN=0 (x1)
-	ads_cmd += "0"			# INPUT=NORMAL
-	ads_cmd += "1"			# BIAS include
-	ads_cmd += "0"			# SRB2 disconnect
-	ads_cmd += "0"			# SRB1 disconnect
-	ads_cmd += "X"
+def build_channel_settings_cmd(ch: int, gain: int, input_type: int, bias: int, srb2: int, srb1: int, power_down: int = 0) -> str:
+	"""Build Cyton channel settings command: x(CH, POWER_DOWN, GAIN, INPUT, BIAS, SRB2, SRB1)X"""
+	return f"x{ch}{power_down}{gain}{input_type}{bias}{srb2}{srb1}X"
 
-	board.config_board(ads_cmd)
-	time.sleep(0.02)
+def build_impedance_cmd(ch: int, active: bool, is_n: bool) -> str:
+	"""Build Cyton impedance/lead-off command: z(CH, PCHAN, NCHAN)Z"""
+	p = "0"
+	n = "0"
+	if active:
+		if is_n:
+			n = "1"
+		else:
+			p = "1"
+	return f"z{ch}{p}{n}Z"
 
 def reset_to_defaults(board: BoardShim):
 	"""
@@ -564,10 +567,10 @@ def reset_to_defaults(board: BoardShim):
 	"""
 	try:
 		board.config_board("d")
+		time.sleep(0.1)
 		return True, "OK"
 	except Exception as e:
 		return False, f"ERR: {e}"
-	time.sleep(0.05)
 
 def calc_impedance_from_vrms(vrms_uV):
 	"""
@@ -585,7 +588,7 @@ def take_recent_1s(x_uV, fs):
 	"""
 	n = int(fs * 1.0)
 	seg = x_uV[-n:]
-	return float(np.std(seg, ddof=0))	# μV
+	return float(np.sqrt(np.mean(seg ** 2)))
 
 def bandpass_apply(x, fs):
 	"""
@@ -594,16 +597,42 @@ def bandpass_apply(x, fs):
 	b, a = iirfilter(4, [BAND[0]/(fs/2.0), BAND[1]/(fs/2.0)], btype='band', ftype='butter')
 	return filtfilt(b, a, x)
 
-def send_leadoff(board, ch, p_apply, n_apply):
-	"""
-	Send Cyton ASCII command to enable/disable lead-off.
-	CHANNEL: '1'..'8'
-	P/N: '0' (off) or '1' (on)
-	Example: ch1 N-side ON → 'z101Z'
-	"""
-	cmd = f"z{ch}{p_apply}{n_apply}Z"
-	board.config_board(cmd)
-	time.sleep(0.02)
+def change_leadoff(board, ch, is_on, _ch_cfg=None, _ch_last_cfg=None, STREAM_CFG_DEFAULT=None, IMP_CFG=None):
+	ch_idx = ch - 1  # zero-based index
+	is_n = True
+
+	if is_on:
+		_ch_last_cfg[ch_idx] = _ch_cfg[ch_idx].copy()
+		_ch_cfg[ch_idx] = IMP_CFG.copy()
+	else:
+		if _ch_last_cfg[ch_idx] is not None:
+			_ch_cfg[ch_idx] = _ch_last_cfg[ch_idx].copy()
+			_ch_last_cfg[ch_idx] = None
+		else:
+			_ch_cfg[ch_idx] = STREAM_CFG_DEFAULT.copy()
+
+	cfg = _ch_cfg[ch_idx]
+	x_cmd = build_channel_settings_cmd(
+		ch=ch,
+		gain=cfg["gain"],
+		input_type=cfg["input_type"],
+		bias=cfg["bias"],
+		srb2=cfg["srb2"],
+		srb1=cfg["srb1"],
+		power_down=0
+	)
+	z_cmd = build_impedance_cmd(ch=ch, active=is_on, is_n=is_n)
+	cmd = x_cmd + z_cmd
+
+	try:
+		resp = board.config_board(cmd)
+		print(f"Ch{ch} Cmd: {cmd} | Resp: {resp}")
+	except UnicodeDecodeError:
+		print(f"Ch{ch} Cmd: {cmd} | (Success but response decode error)")
+
+	time.sleep(0.1)
+
+	return _ch_cfg, _ch_last_cfg
 
 def set_latency_timer(value=1, retries=3, delay=0.2):
     # /sys/bus/usb-serial/devices/ttyUSB*/latency_timer を探す
