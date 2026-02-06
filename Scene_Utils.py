@@ -431,7 +431,24 @@ class ImpedanceResultsSingleScene(Scene):
 		self.impedance_value = None
 		self.retry_needed = False
 
+	def _advance_to_next_cable(self):
+		"""Switch to the next cable scene or trainer when complete."""
+		if self.cable_index is None:
+			return
+
+		next_index = self.cable_index + 1
+		if next_index < len(ABMI_Utils.CABLE_COLORS):
+			next_cable_name = ABMI_Utils.CABLE_COLORS[next_index]
+			self.app.switch_scene(f"impedance_check_{next_cable_name}")
+		else:
+			self.app.switch_scene("trainer")
+
 	def handle_events(self, event):
+		if event.type == pygame.KEYDOWN and event.key == pygame.K_b and self.retry_needed:
+			print(f"Bypassing retry for {self.cable_name}, moving to next cable.")
+			self._advance_to_next_cable()
+			return
+
 		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
 			if self.retry_needed:
 				scene_key = f"impedance_check_{self.cable_name.lower()}"
@@ -446,13 +463,7 @@ class ImpedanceResultsSingleScene(Scene):
 				self.app.switch_scene(scene_key)
 				return
 
-			if self.cable_index is not None:
-				next_index = self.cable_index + 1
-				if next_index < len(ABMI_Utils.CABLE_COLORS):
-					next_cable_name = ABMI_Utils.CABLE_COLORS[next_index]
-					self.app.switch_scene(f"impedance_check_{next_cable_name}")
-				else:
-					self.app.switch_scene("trainer")
+			self._advance_to_next_cable()
 
 	def update(self):
 		if hasattr(self.app, 'current_cable_result'):
