@@ -533,7 +533,7 @@ languages = ["English", "日本語"]
 selected_lang_index = 0
 motor_readings = ["Right Arm", "Left Arm"]
 motor_readings_jp = ["右アーム", "左アーム"]
-expected_ports = ["/dev/ttyUSB1", "/dev/ttyUSB0"] #Right First, Left Second
+expected_ports = ["/dev/u2d2_right", "/dev/u2d2_left"] #Right First, Left Second
 current_motor_reading = 0
 
 # Dynamixel Vars
