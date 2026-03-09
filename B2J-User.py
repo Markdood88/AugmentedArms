@@ -10,6 +10,8 @@ from queue import Empty
 from datetime import datetime
 from serial.tools import list_ports
 from multiprocessing import Process, Queue
+import time
+import random
 
 #---------------------------------------------
 # ---- OGINO IMPLEMENTTED----
@@ -27,7 +29,17 @@ RESET = "\033[0m"
 ESP_VID = 0x1a86 
 esp_ser = None #ESP Now Serial Port
 
-m5_port = "/dev/m5stick_sender"
+def pick_m5_port():
+	ports = list(list_ports.comports())
+	for p in ports:
+		text = f"{p.description} {p.manufacturer} {p.product}".lower()
+
+		if "ftdi" in text:
+			continue
+
+		return p.device
+
+m5_port = pick_m5_port()
 baud = 115200
 MAX_ESP_PAYLOAD_BYTES = 240
 
@@ -60,7 +72,7 @@ clock = None
 title_font = None
 state_font = None
 
-board = ABMI_Utils.BCIBoard(port="/dev/bci_dongle")
+board = ABMI_Utils.BCIBoard(port="/dev/ttyUSB0")
 sequence_thread = None
 cancel_event = None
 
@@ -100,24 +112,6 @@ def readRecentLatestTestFile(file_path):
 
 	return rows[-1]
 
-def start_led_controller():
-	global esp_ser
-	esp_port = find_esp_port()
-	if esp_port is not None:
-		esp_ser = serial.Serial(esp_port, 115200, timeout=1.0)
-	else:
-		esp_ser = None
-
-def find_esp_port():
-	for p in list_ports.comports():
-		# OpenBCI 以外で一致するものを優先して取る
-		if p.vid == ESP_VID:
-			print(f"[OK] ESP8266 found: {p.device}")
-			return p.device
-
-	print("[WARN] ESP8266 が見つかりません（なくても続行）")
-	return None
-
 def sendToM5(port: str, baud: int, message: str):
 	
 	if not message:
@@ -131,6 +125,56 @@ def sendToM5(port: str, baud: int, message: str):
 			ser.flush()
 	except serial.SerialException as e:
 		print(f"Serial error: {e}")
+
+def _send_single_command(ch, val):
+	command = f"Ch{ch}-{val}\n"
+	sendToM5(m5_port, baud, f"S,{command}/n")
+
+def send_led_command(ch, val): 
+    """LEDコントローラーへコマンドを送信"""
+    global esp_ser
+    
+    # チャンネル9が選択されている場合は、1〜8全てに同じコマンドを送る
+    if ch == 9:
+        print(f"Sending to ALL Channels -> Pattern: {val}{RESET}")
+        for i in range(1, 9):
+            _send_single_command(i, val)
+            time.sleep(0.01) 
+    else:
+        print(f"Sending to Ch: {ch} -> Pattern: {val}{RESET}")
+        _send_single_command(ch, val)
+
+def send_led_flicker():
+    channels = list(range(1, 9))  # 1〜9
+    random.shuffle(channels)
+
+    for rnd_ch in channels:
+        send_led_command(rnd_ch, 4)
+        time.sleep(0.1)
+
+def send_led_left():
+    for ch in [1, 4, 7]:
+        send_led_command(ch, 3)
+    time.sleep(1)
+    for ch in [1, 4, 7]:
+        send_led_command(ch, 1)
+
+def send_led_center():
+    for ch in [2, 5]:
+        send_led_command(ch, 3)
+    time.sleep(1)
+    for ch in [2, 5]:
+        send_led_command(ch, 1)
+
+def send_led_right():
+    for ch in [3, 6, 8]:
+        send_led_command(ch, 3)
+    time.sleep(1)
+    for ch in [3, 6, 8]:
+        send_led_command(ch, 1)
+
+def send_led_all_off():
+    send_led_command(9, 0)  # 全てのチャンネルにオフコマンドを送る
 
 def handleIdle():
 
@@ -155,6 +199,8 @@ def handleIdle():
 
 		sequence_thread, cancel_event = ABMI_Utils.startSingleTrainingSequence(board, userID, timestamp, lcr_choice, testing_path)
 
+		send_led_all_off()
+
 	return
 
 def handleRecording():
@@ -165,7 +211,7 @@ def handleRecording():
 	#if msg is None:
 	#	return
 	recent = str(board._last_data_frame)
-	sendToM5(m5_port, baud, recent)
+	sendToM5(m5_port, baud, f"E,{recent}/n")
 	#sendToM5(m5_port, baud, msg)
 	#print(msg)
 
@@ -180,6 +226,13 @@ def handlePredicting():
 
 	try:
 		prediction_choice = ABMI_Utils.useModelToPredict(latest_test_file, model_path)
+		if prediction_choice==1:
+			send_led_left()
+		elif prediction_choice==2:
+			send_led_center()
+		elif prediction_choice==3:
+			send_led_right()
+
 		if prediction_choice == -1:
 			ABMI_Utils.play_single_sound("Sounds/prediction_unknown.wav")
 			state = "idle"
@@ -204,8 +257,10 @@ def handleTriggering():
 	if piezo.was_pressed():
 		ABMI_Utils.play_single_sound(sound_map.get(prediction_choice, "Sounds/prediction_unknown.wav"))
 		#send Trigger
+		sendToM5(m5_port, baud, f"T,{prediction_choice}/n")
 		ABMI_Utils.deleteTestingFiles(testing_path)
 		state = "idle"
+		send_led_all_off()
 
 	return
 
@@ -253,15 +308,14 @@ if __name__ == '__main__':
 	#Start Latency Timer
 	ABMI_Utils.set_latency_timer(1)
 	
-	#Connect to ESP
-	start_led_controller()
-
 	#Connect to BCI
 	board.connect()
 	board.stream()
 
 	screen.fill(black)
 	draw_status_text(force=True)
+
+	send_led_flicker()
 
 	if not board.connected:
 		quit()
