@@ -72,7 +72,7 @@ clock = None
 title_font = None
 state_font = None
 
-board = ABMI_Utils.BCIBoard(port="/dev/ttyUSB0")
+board = ABMI_Utils.BCIBoard(port="/dev/bci_dongle")
 sequence_thread = None
 cancel_event = None
 
