@@ -321,7 +321,17 @@ if __name__ == '__main__':
 		quit()
 
 	#Main Loop
-	while True:
+	running = True
+	while running:
+
+		# Handle keyboard/window events
+    	for event in pygame.event.get():
+	        if event.type == pygame.KEYDOWN:
+	            if event.key == pygame.K_ESCAPE:
+	                running = False
+	        elif event.type == pygame.QUIT:
+	            running = False
+		
 		draw_status_text()
 
 		if state == "idle":
@@ -339,4 +349,14 @@ if __name__ == '__main__':
 		if state == "triggering":
 
 			handleTriggering()
-		
+	
+	# Cleanup on exit
+	send_led_all_off()
+	
+	try:
+	    board.stop_stream()
+	except:
+	    pass
+	
+	pygame.quit()
+	quit()	
