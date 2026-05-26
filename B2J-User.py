@@ -325,12 +325,12 @@ if __name__ == '__main__':
 	while running:
 
 		# Handle keyboard/window events
-    	for event in pygame.event.get():
-	        if event.type == pygame.KEYDOWN:
-	            if event.key == pygame.K_ESCAPE:
-	                running = False
-	        elif event.type == pygame.QUIT:
-	            running = False
+		for event in pygame.event.get():
+			if event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_ESCAPE:
+					running = False
+			elif event.type == pygame.QUIT:
+				running = False
 		
 		draw_status_text()
 
@@ -354,9 +354,9 @@ if __name__ == '__main__':
 	send_led_all_off()
 	
 	try:
-	    board.stop_stream()
+		board.stop_stream()
 	except:
-	    pass
+		pass
 	
 	pygame.quit()
 	quit()	
