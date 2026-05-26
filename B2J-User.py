@@ -26,7 +26,7 @@ GREEN = "\033[92m"
 YELLOW= "\033[93m"
 RESET = "\033[0m"
 
-ESP_VID = 0x1a86 
+ESP_VID = 0x1a86
 esp_ser = None #ESP Now Serial Port
 
 def pick_m5_port():
@@ -65,7 +65,7 @@ mint_green = (54,217,62)
 dark_green = (2,140,0)
 dark_yellow = (201,185,0)
 
-#Pygame vars
+# Pygame vars
 render_w, render_h = 480, 320
 screen = None
 clock = None
@@ -88,14 +88,26 @@ sound_map = {
 
 prediction_choice = None
 
+# B key simulated piezo press
+keyboard_pressed = False
+
 userID = ABMI_Utils.getUserID()
 
-piezo = ALS_Utils.PiezoSensor(pin = 21, cooldown=1)
+piezo = ALS_Utils.PiezoSensor(pin=21, cooldown=1)
 state = "idle"
 title_surface = None
 state_surface = None
 last_text_draw = 0
 text_draw_interval_ms = 200
+
+def was_trigger_pressed():
+	global keyboard_pressed
+
+	if piezo.was_pressed() or keyboard_pressed:
+		keyboard_pressed = False
+		return True
+
+	return False
 
 def readRecentLatestTestFile(file_path):
 	if not file_path or not os.path.exists(file_path):
@@ -113,7 +125,7 @@ def readRecentLatestTestFile(file_path):
 	return rows[-1]
 
 def sendToM5(port: str, baud: int, message: str):
-	
+
 	if not message:
 		return
 
@@ -130,74 +142,76 @@ def _send_single_command(ch, val):
 	command = f"Ch{ch}-{val}\n"
 	sendToM5(m5_port, baud, f"S,{command}/n")
 
-def send_led_command(ch, val): 
-    """LEDコントローラーへコマンドを送信"""
-    global esp_ser
-    
-    # チャンネル9が選択されている場合は、1〜8全てに同じコマンドを送る
-    if ch == 9:
-        print(f"Sending to ALL Channels -> Pattern: {val}{RESET}")
-        for i in range(1, 9):
-            _send_single_command(i, val)
-            time.sleep(0.01) 
-    else:
-        print(f"Sending to Ch: {ch} -> Pattern: {val}{RESET}")
-        _send_single_command(ch, val)
+def send_led_command(ch, val):
+	"""LEDコントローラーへコマンドを送信"""
+	global esp_ser
+
+	if ch == 9:
+		print(f"Sending to ALL Channels -> Pattern: {val}{RESET}")
+		for i in range(1, 9):
+			_send_single_command(i, val)
+			time.sleep(0.01)
+	else:
+		print(f"Sending to Ch: {ch} -> Pattern: {val}{RESET}")
+		_send_single_command(ch, val)
 
 def send_led_flicker():
-    channels = list(range(1, 9))  # 1〜9
-    random.shuffle(channels)
+	channels = list(range(1, 9))
+	random.shuffle(channels)
 
-    for rnd_ch in channels:
-        send_led_command(rnd_ch, 4)
-        time.sleep(0.1)
+	for rnd_ch in channels:
+		send_led_command(rnd_ch, 4)
+		time.sleep(0.1)
 
 def send_led_left():
-    for ch in [1, 4, 7]:
-        send_led_command(ch, 3)
-    time.sleep(1)
-    for ch in [1, 4, 7]:
-        send_led_command(ch, 1)
+	for ch in [1, 4, 7]:
+		send_led_command(ch, 3)
+	time.sleep(1)
+	for ch in [1, 4, 7]:
+		send_led_command(ch, 1)
 
 def send_led_center():
-    for ch in [2, 5]:
-        send_led_command(ch, 3)
-    time.sleep(1)
-    for ch in [2, 5]:
-        send_led_command(ch, 1)
+	for ch in [2, 5]:
+		send_led_command(ch, 3)
+	time.sleep(1)
+	for ch in [2, 5]:
+		send_led_command(ch, 1)
 
 def send_led_right():
-    for ch in [3, 6, 8]:
-        send_led_command(ch, 3)
-    time.sleep(1)
-    for ch in [3, 6, 8]:
-        send_led_command(ch, 1)
+	for ch in [3, 6, 8]:
+		send_led_command(ch, 3)
+	time.sleep(1)
+	for ch in [3, 6, 8]:
+		send_led_command(ch, 1)
 
 def send_led_all_off():
-    send_led_command(9, 0)  # 全てのチャンネルにオフコマンドを送る
+	send_led_command(9, 0)
 
 def handleIdle():
 
 	global board, state, latest_test_file, sequence_thread, cancel_event
 
-	#Send ESP Data
-	#recent = str(board.board.get_board_data())
-	#sendToM5(m5_port, baud, recent)
-
-	#Check for Piezo Press
-	if piezo.was_pressed():
+	if was_trigger_pressed():
 		state = "recording"
 		ABMI_Utils.play_single_sound("Sounds/Click.mp3", block=True)
 
 		timestamp = datetime.now()
 		lcr_choice = 4
+
 		if hasattr(timestamp, 'strftime'):
 			timestamp_str = timestamp.strftime('%Y-%m-%d-%H-%M-%S')
 		else:
 			timestamp_str = str(timestamp)
+
 		latest_test_file = os.path.join("Testing", f"{userID}-{timestamp_str}-{lcr_choice}.csv")
 
-		sequence_thread, cancel_event = ABMI_Utils.startSingleTrainingSequence(board, userID, timestamp, lcr_choice, testing_path)
+		sequence_thread, cancel_event = ABMI_Utils.startSingleTrainingSequence(
+			board,
+			userID,
+			timestamp,
+			lcr_choice,
+			testing_path
+		)
 
 		send_led_all_off()
 
@@ -207,13 +221,8 @@ def handleRecording():
 
 	global state, sequence_thread, latest_test_file
 
-	#msg = readRecentLatestTestFile(latest_test_file)
-	#if msg is None:
-	#	return
 	recent = str(board._last_data_frame)
 	sendToM5(m5_port, baud, f"E,{recent}/n")
-	#sendToM5(m5_port, baud, msg)
-	#print(msg)
 
 	if not sequence_thread.is_alive():
 		state = "predicting"
@@ -226,19 +235,23 @@ def handlePredicting():
 
 	try:
 		prediction_choice = ABMI_Utils.useModelToPredict(latest_test_file, model_path)
-		if prediction_choice==1:
+
+		if prediction_choice == 1:
 			send_led_left()
-		elif prediction_choice==2:
+		elif prediction_choice == 2:
 			send_led_center()
-		elif prediction_choice==3:
+		elif prediction_choice == 3:
 			send_led_right()
 
 		if prediction_choice == -1:
 			ABMI_Utils.play_single_sound("Sounds/prediction_unknown.wav")
 			state = "idle"
 		else:
-			ABMI_Utils.play_single_sound(sound_map.get(prediction_choice, "Sounds/prediction_unknown.wav"))
+			ABMI_Utils.play_single_sound(
+				sound_map.get(prediction_choice, "Sounds/prediction_unknown.wav")
+			)
 			state = "triggering"
+
 	except Exception as err:
 		print(f"Model prediction failed: {err}")
 		ABMI_Utils.play_single_sound("Sounds/prediction_unknown.wav")
@@ -250,27 +263,29 @@ def handleTriggering():
 
 	global state, sound_map, testing_path
 
-	#Ambient activity is basically predicting:
-	#send a single message that includes the trigger keyword and a direction
+	if was_trigger_pressed():
+		ABMI_Utils.play_single_sound(
+			sound_map.get(prediction_choice, "Sounds/prediction_unknown.wav")
+		)
 
-	#Check for Piezo Press, this single event is triggering
-	if piezo.was_pressed():
-		ABMI_Utils.play_single_sound(sound_map.get(prediction_choice, "Sounds/prediction_unknown.wav"))
-		#send Trigger
 		sendToM5(m5_port, baud, f"T,{prediction_choice}/n")
+
 		ABMI_Utils.deleteTestingFiles(testing_path)
+
 		state = "idle"
 		send_led_all_off()
 
 	return
 
 def draw_status_text(force=False):
+
 	global title_surface, state_surface, last_text_draw, title_font, state_font, state
 
 	if screen is None:
 		return
 
 	now = pygame.time.get_ticks()
+
 	if not force and (now - last_text_draw) < text_draw_interval_ms:
 		return
 
@@ -285,8 +300,12 @@ def draw_status_text(force=False):
 
 	screen.fill(black)
 
-	title_rect = title_surface.get_rect(center=(render_w // 2, render_h // 2 - title_surface.get_height()))
-	state_rect = state_surface.get_rect(center=(render_w // 2, render_h // 2 + state_surface.get_height() // 2))
+	title_rect = title_surface.get_rect(
+		center=(render_w // 2, render_h // 2 - title_surface.get_height())
+	)
+	state_rect = state_surface.get_rect(
+		center=(render_w // 2, render_h // 2 + state_surface.get_height() // 2)
+	)
 
 	screen.blit(title_surface, title_rect)
 	screen.blit(state_surface, state_rect)
@@ -296,19 +315,15 @@ def draw_status_text(force=False):
 
 if __name__ == '__main__':
 
-	#Window at top left
 	os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
 
-	#Start Pygame
 	pygame.init()
 	pygame.mixer.init()
 	screen = pygame.display.set_mode((render_w, render_h), pygame.NOFRAME)
 	pygame.display.set_caption("BMI Trainer")
 
-	#Start Latency Timer
 	ABMI_Utils.set_latency_timer(1)
-	
-	#Connect to BCI
+
 	board.connect()
 	board.stream()
 
@@ -320,43 +335,44 @@ if __name__ == '__main__':
 	if not board.connected:
 		quit()
 
-	#Main Loop
 	running = True
+
 	while running:
 
-		# Handle keyboard/window events
 		for event in pygame.event.get():
+
 			if event.type == pygame.KEYDOWN:
+
 				if event.key == pygame.K_ESCAPE:
 					running = False
+
+				elif event.key == pygame.K_b:
+					keyboard_pressed = True
+					print("B pressed -> simulated piezo press")
+
 			elif event.type == pygame.QUIT:
 				running = False
-		
+
 		draw_status_text()
 
 		if state == "idle":
-
 			handleIdle()
 
 		if state == "recording":
-
 			handleRecording()
 
 		if state == "predicting":
-			
 			handlePredicting()
 
 		if state == "triggering":
-
 			handleTriggering()
-	
-	# Cleanup on exit
+
 	send_led_all_off()
-	
+
 	try:
 		board.stop_stream()
 	except:
 		pass
-	
+
 	pygame.quit()
-	quit()	
+	quit()
