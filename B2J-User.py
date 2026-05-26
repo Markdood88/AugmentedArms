@@ -245,7 +245,7 @@ def handleTriggering():
             sound_map.get(prediction_choice, "Sounds/prediction_unknown.wav")
         )
 
-        sendToM5(m5_port, baud, f"T,{prediction_choice}")
+		sendToM5(m5_port, baud, f"T,{prediction_choice}")
 		# Forward the confirmed choice to drone_monitor (raw "1"/"2"/"3" over WebSocket).
 		# Send is best-effort and non-blocking; failures are logged by the client.
 		if drone_monitor_client is not None and prediction_choice in (1, 2, 3):
