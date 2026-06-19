@@ -248,6 +248,10 @@ def handleTriggering():
 			sound_map.get(prediction_choice, "Sounds/prediction_unknown.wav")
 		)
 
+		print(
+			f"{GREEN}[BCI] Confirmed command: {prediction_choice} "
+		)
+
 		sendToM5(m5_port, baud, f"T,{prediction_choice}")
 
 		# Forward the confirmed choice to drone_monitor
