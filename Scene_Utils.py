@@ -122,7 +122,7 @@ class WiFiCheckScene(Scene):
 			if self.status == "success":
 				self.app.switch_scene("bci_connect")  # go to bci_connect
 
-	def check_internet(self, host="8.8.8.8", port=53, timeout=2):
+	def check_internet(self, host="8.8.8.8", port=443, timeout=2):
 		try:
 			socket.setdefaulttimeout(timeout)
 			s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
