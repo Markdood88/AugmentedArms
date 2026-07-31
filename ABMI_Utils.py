@@ -13,6 +13,7 @@ import serial.tools.list_ports
 import time
 import threading
 import os
+import json
 import csv
 import random
 import pygame
@@ -25,7 +26,7 @@ import subprocess
 import pandas as pd
 
 from pathlib import Path
-from scipy.signal import iirfilter, filtfilt
+from scipy.signal import iirfilter, filtfilt, detrend, iirnotch
 from pyOpenBCI import OpenBCICyton
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds, BrainFlowError
 from ftplib import FTP, error_perm, all_errors
@@ -37,7 +38,9 @@ from sklearn.preprocessing import StandardScaler
 SERIES_R = 2200.0			# Series resistance (2.2 kΩ)
 I_DRIVE = 6.0e-9			# Lead-off drive current (6 nA default)
 MEAS_SEC = 6.0				# Measurement duration in seconds
-BAND = (5, 50)				# Bandpass filter range (Hz)
+SETTLE_SEC = 1.0			# Quiet-the-link wait after stop_stream before sending config commands
+BAND = (5, 50)				# Bandpass filter range (Hz), matches OpenBCI_GUI default
+MAINS_HZ = 50.0				# Mains notch frequency (East Japan = 50 Hz; use 60 for 60 Hz regions)
 ISI = 0.35 					# Inter-Stimulus Interval in seconds
 SOUND_LENGTH = .15			# Duration of Audio
 
@@ -83,8 +86,11 @@ class BCIBoard:
 		self._sample_queue = queue.Queue(maxsize=1000) #Queue holds up to 4 seconds of data
 		self.minimum_recorded_rows = 5800 #20seconds x250, + 500for baseline x2
 
-		self.STREAM_CFG_DEFAULT = dict(gain=6, input_type=0, bias=1, srb2=1, srb1=0)  # reasonable "normal" preset
-		self.IMP_CFG = dict(gain=0, input_type=0, bias=1, srb2=0, srb1=0)            # GUI-like impedance preset
+		self.STREAM_CFG_DEFAULT = dict(gain=6, input_type=0, bias=1, srb2=1, srb1=0)  # normal preset (gain 24x)
+		# OpenBCI_GUI keeps the normal config (gain 24x, srb2=1) for impedance and only
+		# toggles the lead-off (z) bits. The old gain=1x/srb2=0 preset railed the amp
+		# and inflated readings ~7x.
+		self.IMP_CFG = dict(gain=6, input_type=0, bias=1, srb2=1, srb1=0)
 
         # Track what this app last set per channel so we can revert on toggle-off
 		self._ch_cfg = [self.STREAM_CFG_DEFAULT.copy() for _ in range(8)]
@@ -391,12 +397,32 @@ class BCIBoard:
 
 		print("Starting impedance check...")
 
+		# Stop the background stream worker thread (if running) so it does not
+		# call get_board_data() concurrently and steal samples during measurement.
+		if self._stream_thread is not None:
+			self.streaming = False
+			worker = self._stream_thread
+			if worker and worker.is_alive():
+				worker.join(timeout=1.0)
+			self._stream_thread = None
+
 		for ch in channels:
 			color = CABLE_COLORS[ch - 1] if 1 <= ch <= len(CABLE_COLORS) else "black"
 			print(f"Measuring CH{ch} ({color})...")
 
 			try:
 				self.board.stop_stream()
+				# The Cyton keeps emitting binary stream packets for a short time
+				# after the stop command. Let the serial link go quiet and flush
+				# residual samples BEFORE sending channel-config / lead-off
+				# commands, otherwise config_board responses collide with leftover
+				# stream data and the lead-off drive current fails to engage
+				# (→ spuriously high impedance readings).
+				time.sleep(SETTLE_SEC)
+				try:
+					self.board.get_board_data()  # discard residual samples
+				except Exception:
+					pass
 				reset_to_defaults(self.board)
 				self._ch_cfg, self._ch_last_cfg = change_leadoff(self.board, ch, True, self._ch_cfg, self._ch_last_cfg, self.STREAM_CFG_DEFAULT, self.IMP_CFG)  # enable lead-off
 				self.board.start_stream()
@@ -406,12 +432,26 @@ class BCIBoard:
 
 				row = BoardShim.get_eeg_channels(self.board_id)[ch - 1]
 				x_uV = data[row, :]
-				x_bp = bandpass_apply(x_uV, self.fs)
-				uVrms = take_recent_1s(x_bp, self.fs)
-				z_kohm = calc_impedance_from_vrms(uVrms) / 1000.0
+				gui_rms = gui_std_vrms(x_uV, self.fs)  # GUI data_std_uV: std(bandpass+notch), last 1 s
+				z_kohm = calc_impedance_from_vrms(gui_rms) / 1000.0
 				results.append((ch, z_kohm))
+				# --- DIAG ---
+				_fs = int(self.fs)
+				_raw = x_uV[-_fs:] if x_uV.size else np.array([0.0])
+				raw_rms = float(np.sqrt(np.mean(_raw ** 2)))
+				_xmax = float(np.max(x_uV)) if x_uV.size else 0.0
+				_n_rail = int(np.sum(_raw >= 0.99 * _xmax)) if _xmax > 0 else 0
+				print(f"[DIAG] CH{ch} fs={self.fs} n={data.shape[1]} raw_uVrms={raw_rms:.1f} "
+					  f"rail%={100.0*_n_rail/len(_raw):.1f} std_uV={gui_rms:.2f} -> {z_kohm:.2f} kΩ")
+				# --- end DIAG ---
 				print(f"CH{ch} ({color}): {z_kohm:.2f} kΩ")
 				self.board.stop_stream()
+				# Same quiet-the-link settle before restoring the normal channel config.
+				time.sleep(SETTLE_SEC)
+				try:
+					self.board.get_board_data()  # discard residual samples
+				except Exception:
+					pass
 				self._ch_cfg, self._ch_last_cfg = change_leadoff(self.board, ch, False, self._ch_cfg, self._ch_last_cfg, self.STREAM_CFG_DEFAULT, self.IMP_CFG)  # disable lead-off
 				self.board.start_stream()
 
@@ -582,6 +622,21 @@ def calc_impedance_from_vrms(vrms_uV):
 	Z -= SERIES_R
 	return max(Z, 0.0)
 
+def gui_std_vrms(x_uV, fs, mains_hz=MAINS_HZ):
+	"""
+	OpenBCI_GUI-faithful Vrms = std-dev of the most recent 1 s after bandpass +
+	mains notch (this is the GUI's data_std_uV). No lock-in.
+	"""
+	x = np.asarray(x_uV, dtype=float)
+	if x.size < int(fs):
+		return float('nan')
+	y = bandpass_apply(x, fs)
+	w0 = mains_hz / (fs / 2.0)
+	if 0.0 < w0 < 1.0:
+		bn, an = iirnotch(w0, 30.0)
+		y = filtfilt(bn, an, y)
+	return float(np.std(y[-int(fs):]))
+
 def take_recent_1s(x_uV, fs):
 	"""
 	Take the most recent 1 second of data and compute RMS.
@@ -622,15 +677,20 @@ def change_leadoff(board, ch, is_on, _ch_cfg=None, _ch_last_cfg=None, STREAM_CFG
 		power_down=0
 	)
 	z_cmd = build_impedance_cmd(ch=ch, active=is_on, is_n=is_n)
-	cmd = x_cmd + z_cmd
 
-	try:
-		resp = board.config_board(cmd)
-		print(f"Ch{ch} Cmd: {cmd} | Resp: {resp}")
-	except UnicodeDecodeError:
-		print(f"Ch{ch} Cmd: {cmd} | (Success but response decode error)")
-
-	time.sleep(0.1)
+	# Send the channel-settings command and the lead-off command SEPARATELY,
+	# each as its own config_board handshake with a short gap. Combining them
+	# into a single string lets the two "$$$"-terminated responses run together
+	# and corrupts the read boundary (observed as garbled / decode-error
+	# responses on the Raspberry Pi), which in turn makes the lead-off drive
+	# engage unreliably and inflates the impedance reading.
+	for cmd in (x_cmd, z_cmd):
+		try:
+			resp = board.config_board(cmd)
+			print(f"Ch{ch} Cmd: {cmd} | Resp: {resp}")
+		except UnicodeDecodeError:
+			print(f"Ch{ch} Cmd: {cmd} | (Success but response decode error)")
+		time.sleep(0.15)  # let the response fully drain before the next command
 
 	return _ch_cfg, _ch_last_cfg
 
@@ -1077,28 +1137,79 @@ def labelTestingFile(test_file, session_folder, lcr_value):
 
 #Ogino Model Functions
 
+# Fallback values, used whenever a model folder has no best_params.json
+# (or it fails to load) so existing models/apps keep working unchanged.
+DEFAULT_MODEL_PARAMS = {
+	"numtaps": 21,
+	"low_cutoff": 0.1,
+	"high_cutoff": 30,
+	"downsampling_rate": 10,
+	"baseline_length": 5,
+	"epoch_pattern": 6,
+}
+
+def loadModelParams(model_folder="Model/"):
+	"""
+	Load feature-extraction hyperparameters for a given model folder.
+
+	Reads best_params.json from model_folder if present and merges it over
+	DEFAULT_MODEL_PARAMS, so a partial file (or a missing/unreadable one)
+	still yields a complete, usable set of params. Never raises.
+	"""
+	params = dict(DEFAULT_MODEL_PARAMS)
+	params_path = os.path.join(model_folder, "best_params.json")
+	if os.path.isfile(params_path):
+		try:
+			with open(params_path, "r") as f:
+				params.update(json.load(f))
+		except Exception as err:
+			print(f"[loadModelParams] Failed to read {params_path}, using defaults: {err}")
+	return params
+
 def useModelToPredict(test_file_path, model_folder="Model/"):
 	"""
 	Use the model to predict the label of the given file.
 	"""
- 
+
 	model_path = os.path.join(model_folder, "model.pkl")
- 
+
 	# モデルとスケーラーをロード
 	svm = joblib.load(model_path)
-	
+
 	# 特徴量を抽出
-	features = process_file(test_file_path)
-		
+	features = process_file(test_file_path, model_folder=model_folder)
+
 	# 予測を実行
 	predictions = svm.predict(features)
 	return int(predictions[0])
 
-def process_file(file_path, use_mean_features=True):
+# Bit for each stimulus label included in an epoch_pattern:
+#   bit 0 (1) = label 1, bit 1 (2) = label 2, bit 2 (4) = label 3.
+# This matches the two known patterns: 6 (2+4) = labels {2,3} (the
+# previously-hardcoded behavior), 7 (1+2+4) = labels {1,2,3}, i.e. every
+# label concatenated with nothing left out ("just flattened"). Selected
+# labels' mean ERPs are concatenated in ascending label order, so the
+# feature vector length always matches what a model trained on the same
+# epoch_pattern value expects.
+EPOCH_PATTERN_LABEL_BITS = {1: 0b001, 2: 0b010, 3: 0b100}
+
+def buildEpochPatternFeatures(erp_epochs, epoch_labels, epoch_pattern):
+	selected_labels = [label for label, bit in EPOCH_PATTERN_LABEL_BITS.items() if int(epoch_pattern) & bit]
+	if not selected_labels:
+		selected_labels = sorted(EPOCH_PATTERN_LABEL_BITS)
+
+	parts = []
+	for label in selected_labels:
+		label_epochs = erp_epochs[epoch_labels == label]
+		parts.append(np.mean(label_epochs, axis=0).flatten())
+	return np.concatenate(parts)
+
+def process_file(file_path, model_folder="Model/", use_mean_features=True):
 	# データ処理と特徴量抽出を行う関数
+	params = loadModelParams(model_folder)
 	original_sampling_rate = 250
-	numtaps = 11
-	
+	numtaps = params["numtaps"]
+
 	# CSVファイルを読み込む
 	data = pd.read_csv(file_path).values
 	
@@ -1111,16 +1222,12 @@ def process_file(file_path, use_mean_features=True):
 	# 刺激オンセットのインデックスを取得
 	stimulus_onsets = np.where(np.diff(stimulus_labels) != 0)[0] + 1
 	stimulus_onsets = stimulus_onsets[stimulus_labels[stimulus_onsets] != 0]
-	
-	# 刺激ラベルの0を削除し、連続するものを1つにする
-	processed_stimulus_labels = stimulus_labels[stimulus_labels != 0]
-	processed_stimulus_labels = np.concatenate(([processed_stimulus_labels[0]], processed_stimulus_labels[1:][processed_stimulus_labels[1:] != processed_stimulus_labels[:-1]]))
-	
+
 	# 脳波データ（ch5列目のみ）を取得
 	# バンドパスフィルタの設計
 	nyquist_rate = original_sampling_rate / 2
-	low_cutoff = 0.5/ nyquist_rate
-	high_cutoff = 30 / nyquist_rate
+	low_cutoff = params["low_cutoff"] / nyquist_rate
+	high_cutoff = params["high_cutoff"] / nyquist_rate
 	b = firwin(numtaps, [low_cutoff, high_cutoff], pass_zero=False)
 	
 	# EEGデータを取得（多極対応）
@@ -1142,32 +1249,16 @@ def process_file(file_path, use_mean_features=True):
 		pass
 		
 	# エポック毎のERPを計算
-	erp_epochs, pure_erp_epochs = compute_erp(eeg_data, stimulus_onsets)
-	
+	erp_epochs, pure_erp_epochs = compute_erp(
+		eeg_data,
+		stimulus_onsets,
+		downsampling_rate=params["downsampling_rate"],
+		baseline_length=params["baseline_length"],
+	)
+
 	features = []
 	if use_mean_features:
-		# 刺激ラベルが1と3のエポックを分ける
-		erp_label_1 = erp_epochs[stimulus_labels[stimulus_onsets] == 1]
-		erp_label_2 = erp_epochs[stimulus_labels[stimulus_onsets] == 2]
-		erp_label_3 = erp_epochs[stimulus_labels[stimulus_onsets] == 3]
-		
-		# 平均を計算
-		mean_erp_label_1 = np.mean(erp_label_1, axis=0)
-		mean_erp_label_2 = np.mean(erp_label_2, axis=0)
-		mean_erp_label_3 = np.mean(erp_label_3, axis=0)
-		
-		# 差を計算して特徴量に追加
-		if(0):
-			diff_erp = (mean_erp_label_1 - mean_erp_label_3).flatten()
-		
-		# 各音に対する特徴量を統合
-		if(1):
-			diff_erp = np.concatenate((mean_erp_label_1.flatten(), mean_erp_label_2.flatten(), mean_erp_label_3.flatten()))
-
-		# 刺激ラベルを特徴量に追加
-		if(0):
-			diff_erp = np.concatenate((diff_erp, processed_stimulus_labels[:len(diff_erp)]))
-
+		diff_erp = buildEpochPatternFeatures(erp_epochs, stimulus_labels[stimulus_onsets], params["epoch_pattern"])
 		features.append(diff_erp)
 
 	else:
@@ -1187,12 +1278,11 @@ def process_file(file_path, use_mean_features=True):
 	
 	return np.vstack(features)
 
-def compute_erp(data, stimulus_onsets):
+def compute_erp(data, stimulus_onsets, downsampling_rate=10, baseline_length=5):
 	window_size = 250
-	downsampling_rate = 25
 	diff_downsampling_rate = 25
 	fir_delay = 0
-	
+
 	downsampling_factor = window_size // downsampling_rate
 	diff_downsampling_factor = window_size // diff_downsampling_rate
 	erp = []
@@ -1200,15 +1290,15 @@ def compute_erp(data, stimulus_onsets):
 	for onset in stimulus_onsets:
 		if onset + window_size <= data.shape[0]:
 			# ベースライン区間を計算
-			baseline_start = max(0, onset - 5 - fir_delay)
+			baseline_start = max(0, onset - baseline_length - fir_delay)
 			baseline_end = onset - fir_delay
 			baseline = data[baseline_start:baseline_end].mean(axis=0)
 			segment = data[onset - fir_delay:onset + window_size - fir_delay] - baseline
 			# # 区間を平均してダウンサンプリング
 			downsampled_segment = segment.reshape(-1, downsampling_factor, segment.shape[1]).mean(axis=1)
-			
+
 			# diff_downsampled_segment = segment.reshape(-1, diff_downsampling_factor, segment.shape[1]).mean(axis=1)
-			
+
 			if False:  # 変化率特徴量を計算する場合はTrueに変更
 				# 変化率特徴量を計算
 				rate_of_change = np.diff(diff_downsampled_segment, axis=0)
@@ -1218,11 +1308,11 @@ def compute_erp(data, stimulus_onsets):
 				features.append(combined_features)
 			else:
 				features.append(downsampled_segment)
-	
+
 	for onset in stimulus_onsets:
 		if onset + window_size <= data.shape[0]:
 			# ベースライン区間を計算
-			baseline_start = max(0, onset - 5 - fir_delay)
+			baseline_start = max(0, onset - baseline_length - fir_delay)
 			baseline_end = onset - fir_delay
 			baseline = data[baseline_start:baseline_end].mean(axis=0)
 			segment = data[onset - fir_delay:onset + window_size - fir_delay] - baseline
