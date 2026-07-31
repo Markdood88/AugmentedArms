@@ -449,6 +449,11 @@ class ImpedanceResultsSingleScene(Scene):
 			self._advance_to_next_cable()
 			return
 
+		if event.type == pygame.KEYDOWN and event.key == pygame.K_x and self.retry_needed:
+			print(f"Skipping all cables and moving to trainer.")
+			self.app.switch_scene("trainer")
+			return
+
 		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
 			if self.retry_needed:
 				scene_key = f"impedance_check_{self.cable_name.lower()}"
@@ -1348,7 +1353,7 @@ class BMITrainer:
 
 		# Developer mode flags
 		self.developer_mode = False
-		self.dev_start_scene = "bci_connect"
+		self.dev_start_scene = "welcome"
 		self.dev_skip_bci_connect = False
 
 		self.bciboard = None
