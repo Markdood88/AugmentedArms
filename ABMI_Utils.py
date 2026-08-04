@@ -1,1334 +1,1434 @@
-"""
-ABMI-Utils.py
-Utility functions for BMI-Trainer project.
-Core code written and designed by Mikito Ogino
-All copyright and intellectual property belongs to Mikito Ogino
-"""
-
-# -*- coding: utf-8 -*-
-import time
-import numpy as np
-import serial
-import serial.tools.list_ports
-import time
-import threading
 import os
-import json
-import csv
-import random
 import pygame
-import shutil
-import queue
+import sys
+import socket
+import time
+import math
+import threading
+import numpy as np
 import datetime
-import joblib
-import glob
-import subprocess
-import pandas as pd
 
-from pathlib import Path
-from scipy.signal import iirfilter, filtfilt, detrend, iirnotch
-from pyOpenBCI import OpenBCICyton
-from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds, BrainFlowError
-from ftplib import FTP, error_perm, all_errors
-from scipy.signal import firwin, lfilter
-from scipy.signal import filtfilt
-from sklearn.preprocessing import StandardScaler
+#Audio BMI Code by MIKITO OGINO
+import ABMI_Utils
 
-# --- Constants ---
-SERIES_R = 2200.0			# Series resistance (2.2 kΩ)
-I_DRIVE = 6.0e-9			# Lead-off drive current (6 nA default)
-MEAS_SEC = 6.0				# Measurement duration in seconds
-SETTLE_SEC = 1.0			# Quiet-the-link wait after stop_stream before sending config commands
-BAND = (5, 50)				# Bandpass filter range (Hz), matches OpenBCI_GUI default
-MAINS_HZ = 50.0				# Mains notch frequency (East Japan = 50 Hz; use 60 for 60 Hz regions)
-ISI = 0.35 					# Inter-Stimulus Interval in seconds
-SOUND_LENGTH = .15			# Duration of Audio
+# Font Path
+notoFont = "/home/b2j/Desktop/AugmentedArms/Font/NotoSansJP-Bold.otf"
 
-# Hand-coded color table for cable impedance display
-# Each color is defined as RGB tuple (0-255 range)
-CABLE_COLORS_RGB = [
-	(120, 120, 120),  # Channel 1: Gray
-	(129, 37, 186),    # Channel 2: Purple  
-	(19, 26, 120),      # Channel 3: Blue
-	(24, 168, 101),      # Channel 4: Green
-	(196, 187, 16),    # Channel 5: Yellow
-	(219, 120, 13),    # Channel 6: Orange
-	(196, 0, 0),      # Channel 7: Red
-	(107, 54, 29)     # Channel 8: Brown
-]
+# Colors
+white = (217,217,217)
+blue = (23,100,255)
+dark_blue = (21,19,186)
+cool_blue = (74,198,255)
+light_blue = (54,106,217)
+warning_orange = (214,162,17)
+soft_red = (250,61,55)
+light_red = (255,143,133)
+red = (200,0,0)
+black = (0,0,0)
+light_green = (82,255,128)
+light_yellow = (220,200,80)
+green = (0,200,0)
+soft_green = (152,250,132)
+mint_green = (54,217,62)
+dark_green = (2,140,0)
+dark_yellow = (201,185,0)
 
-# Legacy string color names for backward compatibility
-CABLE_COLORS = ['gray', 'purple', 'blue', 'green', 'yellow', 'orange', 'red', 'brown']
-
-class SingleTrainingSequenceError(Exception):
-	"""Raised when a single training sequence fails to start."""
-
-class BCIBoard:
-	def __init__(self, port="/dev/ttyUSB0"):
-		self.port = port
-		self.board = None
-		self.board_id = BoardIds.CYTON_BOARD.value
-		self.fs = BoardShim.get_sampling_rate(self.board_id)
-		self.channels = list(range(1, 9))  # default 8 channels
-		self.connected = False
-		self.streaming = False
-		self._last_data_time = None
-		self._stream_thread = None
-		self._last_data_frame = None
-  
-		#Recording Vars
-		self.recording = False
-		self.stimulus_sound = 0
-		self.sequence_id = 0
-		self._record_thread = None
-		self._record_stop_event = None
-		self._record_file_path = None
-		self._sample_queue = queue.Queue(maxsize=1000) #Queue holds up to 4 seconds of data
-		self.minimum_recorded_rows = 5800 #20seconds x250, + 500for baseline x2
-
-		self.STREAM_CFG_DEFAULT = dict(gain=6, input_type=0, bias=1, srb2=1, srb1=0)  # normal preset (gain 24x)
-		# OpenBCI_GUI keeps the normal config (gain 24x, srb2=1) for impedance and only
-		# toggles the lead-off (z) bits. The old gain=1x/srb2=0 preset railed the amp
-		# and inflated readings ~7x.
-		self.IMP_CFG = dict(gain=6, input_type=0, bias=1, srb2=1, srb1=0)
-
-        # Track what this app last set per channel so we can revert on toggle-off
-		self._ch_cfg = [self.STREAM_CFG_DEFAULT.copy() for _ in range(8)]
-		self._ch_last_cfg = [None for _ in range(8)]
-
-
-	def connect(self):
-		BoardShim.disable_board_logger()
-		params = BrainFlowInputParams()
-		params.serial_port = self.port
-		self.board = BoardShim(self.board_id, params)
-
-		try:
-			self.board.prepare_session()
-			self.board.start_stream()
-			print(f"Connected to OpenBCI board at {self.port}")
-			self.connected = True
-			self._last_data_time = None
-			self.streaming = False
-			return True
-
-		except Exception as e:
-			print(f"Failed to connect to OpenBCI board at {self.port}: {e}")
-			try:
-				self.board.release_session()
-			except Exception:
-				pass
-			self.board = None
-			self.connected = False
-			self.streaming = False
-			self._last_data_time = None
-			return False
-
-	def disconnect(self):
-		if self.board:
-			try:
-				self.board.stop_stream()
-				self.board.release_session()
-				print(f"[BCIBoard] Disconnected from board at {self.port}")
-			except Exception:
-				pass
-			self.board = None
-		self.connected = False
-		self.streaming = False
-		self._last_data_time = None
-		self._stream_thread = None
-
-	def _refresh_stream_state(self, stale_timeout=1.5, probe=False):
-		if not self.streaming:
-			return False
-
-		if not self.board:
-			self.streaming = False
-			self.connected = False
-			self._last_data_time = None
-			return False
-
-		if probe:
-			try:
-				data = self.board.get_current_board_data(1)
-				if data.size > 0:
-					self._last_data_time = time.time()
-			except BrainFlowError as e:
-				print(f"[BCIBoard] Streaming probe failed: {e}")
-				self.streaming = False
-				self.connected = False
-				self._last_data_time = None
-				return False
-			except Exception as e:
-				print(f"[BCIBoard] Unexpected streaming probe error: {e}")
-				self.streaming = False
-				self.connected = False
-				self._last_data_time = None
-				return False
-
-		if self._last_data_time is None:
-			self._last_data_time = time.time()
-
-		if time.time() - self._last_data_time > stale_timeout:
-			print(f"[BCIBoard] No data received for {stale_timeout} s; marking board disconnected.")
-			self.streaming = False
-			self.connected = False
-			self._last_data_time = None
-			return False
-
-		return True
-
-	def stream(self, callback=None):
-		if not self.board or not self.connected:
-			print("[BCIBoard] Cannot start streaming: board not connected")
-			return False
-
-		if self.streaming:
-			print("[BCIBoard] Streaming already in progress")
-			return True
-
-		self.streaming = True
-		self._last_data_time = None
-
-		eeg_idxs = BoardShim.get_eeg_channels(self.board_id)
-		try:
-			ts_idx = BoardShim.get_timestamp_channel(self.board_id)
-		except Exception:
-			ts_idx = None
-
-		def _worker():
-			stale_timeout = 1.5
-			while self.streaming and self.board:
-				if not self._refresh_stream_state(stale_timeout=stale_timeout):
-					break
-
-				try:
-					data = self.board.get_board_data()
-				except BrainFlowError as e:
-					print(f"[BCIBoard] Stream error: {e}")
-					self.connected = False
-					self.streaming = False
-					self._last_data_time = None
-					break
-				except Exception as e:
-					print(f"[BCIBoard] Unexpected stream error: {e}")
-					self.connected = False
-					self.streaming = False
-					self._last_data_time = None
-					break
-
-				if data.size > 0:
-					self._last_data_time = time.time()
-					num_samples = data.shape[1]
-					for i in range(num_samples):
-						timestamp = float(data[ts_idx, i]) if ts_idx is not None else time.time()
-						eeg_values = np.array(data[eeg_idxs, i], copy=True)
-						sample = {
-							"timestamp": timestamp,
-							"eeg": eeg_values,
-							"label": self.stimulus_sound,
-							"seq": self.sequence_id
-						}
-						if self.recording and self._record_stop_event and not self._record_stop_event.is_set():
-							try:
-								self._sample_queue.put_nowait(sample)
-							except queue.Full:
-								try:
-									self._sample_queue.get_nowait()
-								except queue.Empty:
-									pass
-								try:
-									self._sample_queue.put_nowait(sample)
-								except queue.Full:
-									pass
-				else:
-					time.sleep(0.002)
-					continue
-
-				time.sleep(0.001)
-
-			self.streaming = False
-			if not self.connected:
-				self._last_data_time = None
-			self._stream_thread = None
-
-		self._stream_thread = threading.Thread(target=_worker, daemon=True)
-		self._stream_thread.start()
-		print(f"[BCIBoard] Started streaming from board at {self.port}")
-		return True
-
-	def stop_stream(self, wait=True, clear_last_time=True):
-		"""Stop the worker thread and optionally clear timing state while staying connected."""
-		self.streaming = False
-		thread = self._stream_thread
-		if thread and thread.is_alive():
-			if wait:
-				thread.join(timeout=1.0)
-		self._stream_thread = None
-		if clear_last_time:
-			self._last_data_time = None
-
-	def start_recording(self, folder_path, filename=None):
-		"""Start a recording worker that logs incoming EEG samples to CSV."""
-		if not folder_path:
-			raise ValueError('folder_path is required')
-
-		if self.recording:
-			print('[BCIBoard] Recording already in progress')
-			return False
-
-		folder = Path(folder_path).expanduser().resolve()
-		folder.mkdir(parents=True, exist_ok=True)
-
-		if filename:
-			file_path = folder / filename
+def draw_text_wrapped(surface, text, font, color, x, y, max_width, line_spacing=5, lang="en"):
+	lines = []
+	for paragraph in text.split("\n"):
+		if lang == "jp":
+			words = list(paragraph)  # treat each character as a word
 		else:
-			timestamp_label = time.strftime('%Y%m%d_%H%M%S')
-			file_path = folder / f'eeg_data_{timestamp_label}.csv'
-
-		header = ['Timestamp', 'Ch1', 'Ch2', 'Ch3', 'Ch4', 'Ch5', 'Ch6', 'Ch7', 'Ch8', 'Label', 'Seq']
-
-		stop_event = threading.Event()
-		self._record_stop_event = stop_event
-		self._record_file_path = str(file_path)
-		self._sample_queue = queue.Queue(maxsize=1000)
-		sample_queue = self._sample_queue
-
-		def _record_worker():
-			rows_written = 0
-			should_delete = False
-			try:
-				with file_path.open('w', newline='') as csvfile:
-					writer = csv.writer(csvfile)
-					writer.writerow(header)
-					while not stop_event.is_set() or not sample_queue.empty():
-						if not self.connected or not self.streaming:
-							should_delete = True
-							stop_event.set()
-							while not sample_queue.empty():
-								try:
-									sample_queue.get_nowait()
-								except queue.Empty:
-									break
-							break
-
-						try:
-							sample = sample_queue.get(timeout=0.05)
-						except queue.Empty:
-							continue
-
-						timestamp = sample.get('timestamp')
-						if timestamp is None:
-							timestamp = time.time()
-
-						eeg_values = sample.get('eeg')
-						if eeg_values is None:
-							continue
-
-						row = [float(timestamp)]
-						eeg_array = np.asarray(eeg_values).flatten()
-						row.extend(float(val) for val in eeg_array[:8])
-
-						label = sample.get('label', '')
-						seq = sample.get('seq', '')
-						row.append(label if label is not None else '')
-						row.append(seq if seq is not None else '')
-
-						writer.writerow(row)
-						self._last_data_frame = row #Hold it locally to be read
-						rows_written += 1
-						if rows_written % 50 == 0:
-							csvfile.flush()
-					csvfile.flush()
-			except Exception as e:
-				print(f'[BCIBoard] Recording error: {e}')
-				should_delete = True
-			finally:
-				self.recording = False
-				self._record_thread = None
-				self._record_stop_event = None
-				min_rows = getattr(self, "minimum_recorded_rows", None)
-				if not should_delete and isinstance(min_rows, int) and min_rows > 0:
-					if rows_written < min_rows:
-						print(f"[BCIBoard] Recording discarded: only {rows_written} rows (minimum {min_rows}).")
-						should_delete = True
-				if self._record_file_path and should_delete:
-					try:
-						Path(self._record_file_path).unlink()
-						print(f"[BCIBoard] Discarded incomplete recording: {self._record_file_path}")
-					except Exception:
-						pass
-				self._record_file_path = None
-				self._sample_queue = queue.Queue(maxsize=1000)
-
-		self.recording = True
-		thread = threading.Thread(target=_record_worker, daemon=True)
-		self._record_thread = thread
-		thread.start()
-		print(f"[BCIBoard] Recording started: {file_path}")
-		return str(file_path)
-
-	def stop_recording(self, wait=True):
-		"""Signal the recording worker to stop and close resources."""
-		stop_event = self._record_stop_event
-		if stop_event:
-			stop_event.set()
-
-		self.recording = False
-
-		thread = self._record_thread
-		if thread and thread.is_alive():
-			if wait:
-				thread.join(timeout=2.0)
-
-		self._record_thread = None
-		self._record_stop_event = None
-		self._record_file_path = None
-		self._sample_queue = queue.Queue(maxsize=1000)
-		print('[BCIBoard] Recording stopped')
-
-	def check_impedance(self, channels=None):
-		channels = channels or self.channels
-		results = []
-
-		if not self.board:
-			print("Board not connected. Cannot check impedance.")
-			return results
-
-		print("Starting impedance check...")
-
-		# Stop the background stream worker thread (if running) so it does not
-		# call get_board_data() concurrently and steal samples during measurement.
-		if self._stream_thread is not None:
-			self.streaming = False
-			worker = self._stream_thread
-			if worker and worker.is_alive():
-				worker.join(timeout=1.0)
-			self._stream_thread = None
-
-		for ch in channels:
-			color = CABLE_COLORS[ch - 1] if 1 <= ch <= len(CABLE_COLORS) else "black"
-			print(f"Measuring CH{ch} ({color})...")
-
-			try:
-				self.board.stop_stream()
-				# The Cyton keeps emitting binary stream packets for a short time
-				# after the stop command. Let the serial link go quiet and flush
-				# residual samples BEFORE sending channel-config / lead-off
-				# commands, otherwise config_board responses collide with leftover
-				# stream data and the lead-off drive current fails to engage
-				# (→ spuriously high impedance readings).
-				time.sleep(SETTLE_SEC)
-				try:
-					self.board.get_board_data()  # discard residual samples
-				except Exception:
-					pass
-				reset_to_defaults(self.board)
-				self._ch_cfg, self._ch_last_cfg = change_leadoff(self.board, ch, True, self._ch_cfg, self._ch_last_cfg, self.STREAM_CFG_DEFAULT, self.IMP_CFG)  # enable lead-off
-				self.board.start_stream()
-				self.board.get_board_data()  # clear buffer
-				time.sleep(MEAS_SEC + 0.2)
-				data = self.board.get_board_data()
-
-				row = BoardShim.get_eeg_channels(self.board_id)[ch - 1]
-				x_uV = data[row, :]
-				gui_rms = gui_std_vrms(x_uV, self.fs)  # GUI data_std_uV: std(bandpass+notch), last 1 s
-				z_kohm = calc_impedance_from_vrms(gui_rms) / 1000.0
-				results.append((ch, z_kohm))
-				# --- DIAG ---
-				_fs = int(self.fs)
-				_raw = x_uV[-_fs:] if x_uV.size else np.array([0.0])
-				raw_rms = float(np.sqrt(np.mean(_raw ** 2)))
-				_xmax = float(np.max(x_uV)) if x_uV.size else 0.0
-				_n_rail = int(np.sum(_raw >= 0.99 * _xmax)) if _xmax > 0 else 0
-				print(f"[DIAG] CH{ch} fs={self.fs} n={data.shape[1]} raw_uVrms={raw_rms:.1f} "
-					  f"rail%={100.0*_n_rail/len(_raw):.1f} std_uV={gui_rms:.2f} -> {z_kohm:.2f} kΩ")
-				# --- end DIAG ---
-				print(f"CH{ch} ({color}): {z_kohm:.2f} kΩ")
-				self.board.stop_stream()
-				# Same quiet-the-link settle before restoring the normal channel config.
-				time.sleep(SETTLE_SEC)
-				try:
-					self.board.get_board_data()  # discard residual samples
-				except Exception:
-					pass
-				self._ch_cfg, self._ch_last_cfg = change_leadoff(self.board, ch, False, self._ch_cfg, self._ch_last_cfg, self.STREAM_CFG_DEFAULT, self.IMP_CFG)  # disable lead-off
-				self.board.start_stream()
-
-			except Exception as e:
-				results.append((ch, float('nan')))
-				print(f"Failed to measure CH{ch}: {e}")
-
-		print("Impedance check complete.")
-		return results
-
-class CloudConnection:
-	def __init__(self, host="ftp.yourdomain.com", user="yourusername", password="yourpassword", timeout=10):
-		self.host = host
-		self.user = user
-		self.password = password
-		self.timeout = timeout
-		self.ftp = None
-		
-	def connect(self):
-		try:
-			self.ftp = FTP(self.host, timeout=self.timeout)
-			self.ftp.login(self.user, self.password)
-		except Exception as e:
-			raise Exception(f"Failed to connect to cloud: {e}")
-		return True
-	
-	def folder_exists(self, user_id):
-		if self.ftp is None:
-			self.connect()
-		folder_path = ("/home/File-EXTERNAL/B2J" + user_id)
-		try:
-			self.ftp.cwd(folder_path)
-			return True
-		except error_perm:
-			return False
-		except Exception as e:
-			print(f"Failed to check folder: {e}")
-			return False
-	
-	def create_user_folder(self, user_id):
-		if self.ftp is None:
-			self.connect()
-		try:
-			self.ftp.mkd("/home/File-EXTERNAL/B2J" + user_id)
-		except error_perm as e:
-			raise Exception(f"Failed to create user folder: {e}")
-		except Exception as e:
-			raise Exception(f"Failed to create user folder: {e}")
-		return True
-	
-	def count_files_in_folder(self, user_id):
-		try:
-			self.ftp.cwd(f"/home/File-EXTERNAL/B2J{user_id}/")
-			return len(self.ftp.nlst())
-		except Exception as e:
-			raise Exception(f"Failed to count files in user folder: {e}")
-		return 0
-	
-	def upload_all_files(self, remote_root, user_id, local_root="BMI Trainer Data"):
-		if self.ftp is None:
-			self.connect()
-
-		base_path = Path(local_root)
-		if not base_path.exists():
-			raise FileNotFoundError(f"Local directory '{local_root}' does not exist.")
-
-		session_dirs = [
-			p for p in base_path.iterdir()
-			if p.is_dir() and p.name.startswith(user_id)
-		]
-		
-		if not session_dirs:
-			print(f"No session folders found for user {user_id} in {local_root}")
-			return 0
-		
-		remote_base = f"/home/File-EXTERNAL/B2J{remote_root}"
-		try:
-			self.ftp.cwd(remote_base)
-		except error_perm:
-			print(f"User folder {remote_base} does not exist, creating...")
-			self.create_user_folder(user_id)
-			self.ftp.cwd(remote_base)
-		except Exception as e:
-			print(f"Failed to change directory to {remote_base}: {e}")
-			return 0
-
-		try:
-			existing_remote_files = set(self.ftp.nlst())
-		except Exception:
-			existing_remote_files = set()
-
-		files_uploaded = 0
-		for session_dir in session_dirs:
-			for file_path in session_dir.rglob("*"):
-				if not file_path.is_file():
-					continue
-				flattened = "__".join([session_dir.name] + list(file_path.relative_to(session_dir).parts))
-				if flattened in existing_remote_files:
-					print(f"Skipping existing file on cloud: {flattened}")
-					continue
-				try:
-					with open(file_path, "rb") as fh:
-						self.ftp.storbinary(f"STOR {flattened}", fh)
-					files_uploaded += 1
-					existing_remote_files.add(flattened)
-				except Exception as err:
-					print(f"Failed to upload {file_path}: {err}")
-		return files_uploaded
-
-	def download_all_files(self, remote_root, local_root):
-		if self.ftp is None:
-			self.connect()
-
-		remote_base = f"/home/File-EXTERNAL/B2J{remote_root}"
-		try:
-			self.ftp.cwd(remote_base)
-		except Exception as e:
-			raise Exception(f"Failed to access remote folder '{remote_root}': {e}")
-
-		local_path = Path(local_root)
-		local_path.mkdir(parents=True, exist_ok=True)
-
-		files_downloaded = 0
-		try:
-			for filename in self.ftp.nlst():
-				local_file = local_path / filename
-				with open(local_file, "wb") as f:
-					self.ftp.retrbinary(f"RETR {filename}", f.write)
-				files_downloaded += 1
-		except Exception as e:
-			raise Exception(f"Failed to download files from '{remote_root}': {e}")
-
-		return files_downloaded
-
-def build_channel_settings_cmd(ch: int, gain: int, input_type: int, bias: int, srb2: int, srb1: int, power_down: int = 0) -> str:
-	"""Build Cyton channel settings command: x(CH, POWER_DOWN, GAIN, INPUT, BIAS, SRB2, SRB1)X"""
-	return f"x{ch}{power_down}{gain}{input_type}{bias}{srb2}{srb1}X"
-
-def build_impedance_cmd(ch: int, active: bool, is_n: bool) -> str:
-	"""Build Cyton impedance/lead-off command: z(CH, PCHAN, NCHAN)Z"""
-	p = "0"
-	n = "0"
-	if active:
-		if is_n:
-			n = "1"
-		else:
-			p = "1"
-	return f"z{ch}{p}{n}Z"
-
-def reset_to_defaults(board: BoardShim):
-	"""
-	Reset all channels to Cyton default configuration.
-	"""
-	try:
-		board.config_board("d")
-		time.sleep(0.1)
-		return True, "OK"
-	except Exception as e:
-		return False, f"ERR: {e}"
-
-def calc_impedance_from_vrms(vrms_uV):
-	"""
-	Calculate impedance from Vrms (in microvolts).
-	Z = (sqrt(2) * Vrms) / I_drive - R_series
-	"""
-	Vrms_V = float(vrms_uV) * 1e-6
-	Z = (np.sqrt(2.0) * Vrms_V) / I_DRIVE
-	Z -= SERIES_R
-	return max(Z, 0.0)
-
-def gui_std_vrms(x_uV, fs, mains_hz=MAINS_HZ):
-	"""
-	OpenBCI_GUI-faithful Vrms = std-dev of the most recent 1 s after bandpass +
-	mains notch (this is the GUI's data_std_uV). No lock-in.
-	"""
-	x = np.asarray(x_uV, dtype=float)
-	if x.size < int(fs):
-		return float('nan')
-	y = bandpass_apply(x, fs)
-	w0 = mains_hz / (fs / 2.0)
-	if 0.0 < w0 < 1.0:
-		bn, an = iirnotch(w0, 30.0)
-		y = filtfilt(bn, an, y)
-	return float(np.std(y[-int(fs):]))
-
-def take_recent_1s(x_uV, fs):
-	"""
-	Take the most recent 1 second of data and compute RMS.
-	"""
-	n = int(fs * 1.0)
-	seg = x_uV[-n:]
-	return float(np.sqrt(np.mean(seg ** 2)))
-
-def bandpass_apply(x, fs):
-	"""
-	Apply a 4th-order Butterworth bandpass filter.
-	"""
-	b, a = iirfilter(4, [BAND[0]/(fs/2.0), BAND[1]/(fs/2.0)], btype='band', ftype='butter')
-	return filtfilt(b, a, x)
-
-def change_leadoff(board, ch, is_on, _ch_cfg=None, _ch_last_cfg=None, STREAM_CFG_DEFAULT=None, IMP_CFG=None):
-	ch_idx = ch - 1  # zero-based index
-	is_n = True
-
-	if is_on:
-		_ch_last_cfg[ch_idx] = _ch_cfg[ch_idx].copy()
-		_ch_cfg[ch_idx] = IMP_CFG.copy()
-	else:
-		if _ch_last_cfg[ch_idx] is not None:
-			_ch_cfg[ch_idx] = _ch_last_cfg[ch_idx].copy()
-			_ch_last_cfg[ch_idx] = None
-		else:
-			_ch_cfg[ch_idx] = STREAM_CFG_DEFAULT.copy()
-
-	cfg = _ch_cfg[ch_idx]
-	x_cmd = build_channel_settings_cmd(
-		ch=ch,
-		gain=cfg["gain"],
-		input_type=cfg["input_type"],
-		bias=cfg["bias"],
-		srb2=cfg["srb2"],
-		srb1=cfg["srb1"],
-		power_down=0
-	)
-	z_cmd = build_impedance_cmd(ch=ch, active=is_on, is_n=is_n)
-
-	# Send the channel-settings command and the lead-off command SEPARATELY,
-	# each as its own config_board handshake with a short gap. Combining them
-	# into a single string lets the two "$$$"-terminated responses run together
-	# and corrupts the read boundary (observed as garbled / decode-error
-	# responses on the Raspberry Pi), which in turn makes the lead-off drive
-	# engage unreliably and inflates the impedance reading.
-	for cmd in (x_cmd, z_cmd):
-		try:
-			resp = board.config_board(cmd)
-			print(f"Ch{ch} Cmd: {cmd} | Resp: {resp}")
-		except UnicodeDecodeError:
-			print(f"Ch{ch} Cmd: {cmd} | (Success but response decode error)")
-		time.sleep(0.15)  # let the response fully drain before the next command
-
-	return _ch_cfg, _ch_last_cfg
-
-def set_latency_timer(value=1, retries=3, delay=0.2):
-    # /sys/bus/usb-serial/devices/ttyUSB*/latency_timer を探す
-    paths = glob.glob("/sys/bus/usb-serial/devices/ttyUSB*/latency_timer")
-    if not paths:
-        print("⚠️ USB-serial device not found yet.")
-        return False
-
-    all_ok = True
-    for path in paths:
-        print(f"Setting latency_timer at {path} to {value}")
-        try:
-            # echo value > /sys/... の Python 版（sudo を使って書き込み）
-            subprocess.run(["sudo", "tee", path], input=(str(value) + "\n").encode(), check=True, capture_output=True)
-        except Exception as e:
-            print(f"❌ Error writing: {e}")
-            all_ok = False
-            continue
-
-        # 設定が反映されたか確認（リトライあり）
-        ok = False
-        for attempt in range(1, retries + 1):
-            try:
-                with open(path, "r") as f:
-                    current = f.read().strip()
-                if current == str(value):
-                    ok = True
-                    break
-                else:
-                    print(f"⚠️ Verification attempt {attempt}: got '{current}' (expected '{value}')")
-            except Exception as e:
-                print(f"❌ Error reading (attempt {attempt}): {e}")
-            time.sleep(delay)
-
-        if ok:
-            print(f"✅ Verified latency_timer at {path} == {value}")
-        else:
-            print(f"❌ Failed to verify latency_timer at {path} (expected {value})")
-            all_ok = False
-
-    return all_ok
-
-# ---- Mark implemented functions ---- #
-
-def play_single_sound(filepath="beep_left.wav", block=False):
-	"""
-	Play a .wav file. By default this is asynchronous; pass block=True to wait until completion.
-	"""
-	if not os.path.exists(filepath):
-		print(f"[Sound] File not found: {filepath}")
-		return
-
-	def _play_audio():
-		sound = pygame.mixer.Sound(filepath)
-		channel = sound.play()
-		if channel is not None:
-			while channel.get_busy():
-				time.sleep(0.01)
-		else:
-			time.sleep(sound.get_length())
-
-	try:
-		if block:
-			_play_audio()
-		else:
-			threading.Thread(target=_play_audio, daemon=True).start()
-	except Exception as e:
-		print(f"[Sound] Failed to play sound: {e}")
-
-def createSessionFolder(user_id, timestamp, base_path="BMI Trainer Data/"):
-	'''Create a session folder named '<user_id>-YYYY-MM-DD-HH-MM' inside base_path.'''
-	if not isinstance(user_id, str):
-		user_id = str(user_id)
-	if len(user_id) != 9 or not user_id.isdigit():
-		raise ValueError('user_id must be a 9-digit string')
-
-	if hasattr(timestamp, 'strftime'):
-		timestamp_str = timestamp.strftime('%Y-%m-%d-%H-%M')
-	else:
-		timestamp_str = str(timestamp)
-
-	folder_name = f"{user_id}-{timestamp_str}"
-	base_dir = os.path.abspath(base_path)
-	os.makedirs(base_dir, exist_ok=True)
-	full_path = os.path.join(base_dir, folder_name)
-	if not os.path.isdir(full_path):
-		os.makedirs(full_path)
-	return full_path
-
-def createModelFolder(base_path="Model/"):
-	base_dir = os.path.abspath(base_path)
-	if not os.path.isdir(base_dir):
-		os.makedirs(base_dir, exist_ok=True)
-	return base_dir
-
-def createTestingFolder(base_path="Testing/"):
-	base_dir = os.path.abspath(base_path)
-	if not os.path.isdir(base_dir):
-		os.makedirs(base_dir, exist_ok=True)
-	return base_dir
-
-def deleteEmptyFolders(base_path="BMI Trainer Data/"):
-	"""Remove subdirectories under base_path that contain no files."""
-	base_dir = Path(base_path).expanduser().resolve()
-	if not base_dir.is_dir():
-		return
-
-	for entry in base_dir.iterdir():
-		if not entry.is_dir():
-			continue
-		try:
-			contains_files = any(child.is_file() for child in entry.rglob('*'))
-			if not contains_files:
-				shutil.rmtree(entry)
-		except Exception:
-			pass
-
-def startSingleTrainingSequence(board, user_id, timestamp, lcr_value, base_path):
-	"""
-	Start a single training sequence on a background thread.
-
-	Returns a tuple of (csv_path, worker_thread, cancel_event).
-	"""
-	if board is None:
-		raise ValueError('board is required')
-
-	if not getattr(board, 'connected', False):
-		raise RuntimeError('BCIBoard is not connected')
-
-	if not getattr(board, 'streaming', False):
-		raise RuntimeError('BCIBoard is not streaming')
-
-	if not isinstance(user_id, str):
-		user_id = str(user_id)
-	if len(user_id) != 9 or not user_id.isdigit():
-		raise ValueError('user_id must be a 9-digit string')
-
-	if lcr_value not in (0, 1, 2, 3, 4):
-		raise ValueError('lcr_value must be 0 (testing), 1 (left), 2 (center), 3 (right), 4 (live)')
-
-	direction_map = {0: "testing", 1: "left", 2: "center", 3: "right", 4: "live"}
-	direction = direction_map[lcr_value]
-
-	base_dir = Path(base_path).expanduser().resolve()
-	base_dir.mkdir(parents=True, exist_ok=True)
-
-	if hasattr(timestamp, 'strftime'):
-		timestamp_str = timestamp.strftime('%Y-%m-%d-%H-%M-%S')
-	else:
-		timestamp_str = str(timestamp)
-
-	filename = f"{user_id}-{timestamp_str}-{lcr_value}.csv"
-
-	instruction_path = f"Sounds/instruction_{direction}.wav"
-	beep_path = f"Sounds/beep_{direction}.wav"
-	instruction_starting = "Sounds/instruction_starting.wav"
- 
-	stimulus_sound, sequence_id = generateSequence()
-	cancel_event = threading.Event()
-
-	def _sequence_worker():
-		try:
-			
-			if cancel_event.is_set():
-				return
-
-			play_single_sound(instruction_path, block=True) #First Instruction
-			time.sleep(ISI)
-
-			if cancel_event.is_set():
-				return
-
-			if lcr_value == 0 or lcr_value == 4: #Testing Mode< one of each beep.
-				play_single_sound("Sounds/beep_left.wav", block=True)
-				time.sleep(.5)
-				play_single_sound("Sounds/beep_center.wav", block=True)
-				time.sleep(.5)
-				play_single_sound("Sounds/beep_right.wav", block=True)
-				time.sleep(.5)
-				
+			words = paragraph.split(" ")
+		current_line = ""
+		for word in words:
+			test_line = current_line + word if lang == "jp" else current_line + (" " if current_line else "") + word
+			if font.size(test_line)[0] <= max_width:
+				current_line = test_line
 			else:
-				for _ in range(3): #3 Beeps
-					play_single_sound(beep_path, block=True)
-					time.sleep(ISI)
+				lines.append(current_line)
+				current_line = word
+		if current_line:
+			lines.append(current_line)
 
-			if cancel_event.is_set():
-				return
-   
-			if lcr_value == 4:
-					instruction_starting = "Sounds/begin.mp3"
-			else:
-				instruction_starting = "Sounds/instruction_starting.wav"
-			
-			play_single_sound(instruction_starting, block=True) #Say Starting
+	# Render all lines
+	y_offset = y
+	for line in lines:
+		line_surface = font.render(line, True, color)
+		line_rect = line_surface.get_rect(topleft=(x, y_offset))
+		surface.blit(line_surface, line_rect)
+		y_offset += line_surface.get_height() + line_spacing
 
-			if cancel_event.is_set():
-				return
-   
-			#Start Recording
-			board.stimulus_sound = 0
-			board.sequence_id = 0
-			board.start_recording(base_path, filename=filename)
-			time.sleep(2)
-   
-			start_time = time.time() + 0.1  # 少し余裕を持って開始
-			for stim_idx, (sound, id) in enumerate(zip(stimulus_sound, sequence_id)):
-				
-				#Wait until the scheduled time only to play sound and update
-				scheduled_time = start_time + stim_idx * (ISI + SOUND_LENGTH)
-				while time.time() < scheduled_time:
-					time.sleep(0.0005)
-			  
-				if cancel_event.is_set():
-					break
- 
-				board.stimulus_sound = sound
-				board.sequence_id = id
-	
-				if sound == 1:
-					play_single_sound("Sounds/beep_left.wav", block=True)
-				elif sound == 2:
-					play_single_sound("Sounds/beep_center.wav", block=True)
-				elif sound == 3:
-					play_single_sound("Sounds/beep_right.wav", block=True)
-				elif sound == 4:
-					play_single_sound("Sounds/beep_silent.wav", block=True)
-  
-			if cancel_event.is_set():
-				board.stop_recording()
-				return
-	
-			board.stimulus_sound = 0
-			board.sequence_id = 0
-			time.sleep(2)
+	return y_offset - y  # total height drawn
 
-			board.stop_recording()
-			
-		except Exception as exc:
-			print(f"[BCIBoard] Training sequence error: {exc}")
-			raise SingleTrainingSequenceError(str(exc)) from exc
-		finally:
-			board.stimulus_sound = 0
-			board.sequence_id = 0
+# --- Base Scene Class ---
+class Scene:
+	def __init__(self, app):
+		self.app = app
 
-	sequence_thread = threading.Thread(target=_sequence_worker, daemon=True)
-	sequence_thread.start()
-
-	return sequence_thread, cancel_event
-
-def getUserID(filepath="BMI Trainer Data/UserID.txt"):
-	"""
-	Check if the given file exists. If not, create it and save a 9-digit UserID.
-	Returns the UserID (as a string).
-	"""
-	if not os.path.exists(filepath):
-		user_id = str(random.randint(100000000, 999999999))
-		with open(filepath, "w") as f:
-			f.write(user_id)
-		print(f"[UserID] Created new file '{filepath}' with ID {user_id}")
-	else:
-		with open(filepath, "r") as f:
-			user_id = f.read().strip()
-		if not user_id.isdigit() or len(user_id) != 9:
-			user_id = str(random.randint(100000000, 999999999))
-			with open(filepath, "w") as f:
-				f.write(user_id)
-			print(f"[UserID] Invalid file content, generated new ID {user_id}")
-		else:
-			print(f"[UserID] Found existing ID {user_id}")
-	
-	return user_id
-
-def generateSequence():
-	"""
-	Generates non-repeating order of sounds to play (Left,Center,Right,Silent), and corresponding sequence id
-	"""
-	
-	stimulation_sequence = []
-	sequence_ids = []
-	prev_stim = None
-	
-	#Modifiable
-	numSequences=10
-	playableIDs = [1,2,3,4]
-	
-	for set_idx in range(numSequences):
-		stim_order = random.sample(playableIDs, len(playableIDs))
-		while prev_stim is not None and stim_order[0] == prev_stim:
-			stim_order = random.sample(playableIDs, len(playableIDs))
-		prev_stim = stim_order[-1]
-		stimulation_sequence.extend(stim_order)
-		sequence_ids.extend([set_idx + 1] * len(stim_order))
-		
-	return stimulation_sequence, sequence_ids
-
-def countRecordings(user_id, base_folder="BMI Trainer Data/"):
-	"""Count left/center/right recordings for a user across session folders."""
-	if not isinstance(user_id, str):
-		user_id = str(user_id)
-	if len(user_id) != 9 or not user_id.isdigit():
-		raise ValueError("user_id must be a 9-digit string")
-
-	base_dir = Path(base_folder).expanduser().resolve()
-	if not base_dir.exists():
-		return 0, 0, 0
-
-	left = center = right = 0
-
-	for session_dir in base_dir.iterdir():
-		if not session_dir.is_dir():
-			continue
-		for csv_path in session_dir.glob(f"{user_id}-*.csv"):
-			name = csv_path.name.rstrip().lower()
-			if name.endswith('1.csv'):
-				left += 1
-			elif name.endswith('2.csv'):
-				center += 1
-			elif name.endswith('3.csv'):
-				right += 1
-
-	return left, center, right
-
-def chooseNewLCRValue(counts, acceptable_span=5, max_per_class=333):
-	"""
-	Choose the next L/C/R value (1,2,3) to keep counts balanced.
-
-	counts must be an iterable of three non-negative integers representing (left, center, right).
-	If the spread between the minimum and maximum counts exceeds acceptable_span, the lowest count is chosen.
-	Otherwise a random choice is made among classes that are still below max_per_class.
-	"""
-	try:
-		left, center, right = counts
-	except Exception as exc:
-		raise ValueError("counts must be an iterable with three entries (left, center, right)") from exc
-
-	for value in (left, center, right):
-		if not isinstance(value, int) or value < 0:
-			raise ValueError("All count values must be non-negative integers")
-
-	class_counts = [left, center, right]
-
-	eligible_indices = [idx for idx, count in enumerate(class_counts) if count < max_per_class]
-	if not eligible_indices:
-		raise ValueError("All class counts have reached the maximum allowed recordings")
-
-	min_count = min(class_counts[idx] for idx in eligible_indices)
-	max_count = max(class_counts[idx] for idx in eligible_indices)
-
-	if max_count - min_count > acceptable_span:
-		target_indices = [idx for idx in eligible_indices if class_counts[idx] == min_count]
-	else:
-		target_indices = eligible_indices
-
-	chosen_index = random.choice(target_indices)
-	return chosen_index + 1  # map 0->1 (left), 1->2 (center), 2->3 (right)
-
-def deleteMostRecent(base_path="BMI Trainer Data/"):
-	"""Delete the most recent recording (by timestamp) across all session folders."""
-	base_dir = Path(base_path).expanduser().resolve()
-	if not base_dir.exists():
-		print(f"[deleteMostRecent] Base path not found: {base_dir}")
-		return False
-
-	most_recent_path = None
-	most_recent_time = None
-
-	for session_dir in base_dir.iterdir():
-		if not session_dir.is_dir():
-			continue
-		for csv_path in session_dir.glob('*.csv'):
-			name = csv_path.name
-			parts = name.split('-')
-			if len(parts) < 8:
-				continue
-			try:
-				timestamp_str = '-'.join(parts[1:7])
-				tstamp = datetime.datetime.strptime(timestamp_str, '%Y-%m-%d-%H-%M-%S')
-			except Exception:
-				continue
-
-			if most_recent_time is None or tstamp > most_recent_time:
-				most_recent_time = tstamp
-				most_recent_path = csv_path
-
-	if most_recent_path is None:
-		print('[deleteMostRecent] No recordings found.')
-		return False
-
-	try:
-		most_recent_path.unlink()
-		print(f"[deleteMostRecent] Deleted most recent recording: {most_recent_path}")
-		return True
-	except Exception as exc:
-		print(f"[deleteMostRecent] Failed to delete {most_recent_path}: {exc}")
-		return False
-
-def deleteTestingFiles(base_path="Testing/"):
-	"""Delete all files under the testing directory."""
-	base_dir = Path(base_path).expanduser().resolve()
-	if not base_dir.exists():
-		print(f"[deleteTestingFiles] Testing path not found: {base_dir}")
-		return False
-
-	deleted = False
-	for item in base_dir.glob("*"):
-		try:
-			if item.is_file():
-				item.unlink()
-				deleted = True
-			elif item.is_dir():
-				shutil.rmtree(item)
-				deleted = True
-		except Exception as exc:
-			print(f"[deleteTestingFiles] Failed to delete {item}: {exc}")
-	return deleted
-
-def labelTestingFile(test_file, session_folder, lcr_value):
-	"""
-	Rename a testing file by replacing the trailing class label with the provided lcr_value
-	and move it into the given session folder.
-	"""
-	if lcr_value not in (1, 2, 3):
-		raise ValueError("lcr_value must be 1 (Left), 2 (Center), or 3 (Right)")
-
-	test_path = Path(test_file).expanduser().resolve()
-	if not test_path.exists() or not test_path.is_file():
-		raise FileNotFoundError(f"Testing file not found: {test_path}")
-
-	session_dir = Path(session_folder).expanduser().resolve()
-	session_dir.mkdir(parents=True, exist_ok=True)
-
-	name_parts = test_path.stem.split('-')
-	if not name_parts:
-		raise ValueError(f"Unexpected testing filename format: {test_path.name}")
-
-	name_parts[-1] = str(lcr_value)
-	new_name = '-'.join(name_parts) + test_path.suffix
-	target_path = session_dir / new_name
-
-	shutil.move(str(test_path), str(target_path))
-	return target_path
-
-#Ogino Model Functions
-
-# Fallback values, used whenever a model folder has no best_params.json
-# (or it fails to load) so existing models/apps keep working unchanged.
-DEFAULT_MODEL_PARAMS = {
-	"numtaps": 21,
-	"low_cutoff": 0.1,
-	"high_cutoff": 30,
-	"downsampling_rate": 10,
-	"baseline_length": 5,
-	"epoch_pattern": 6,
-}
-
-def loadModelParams(model_folder="Model/"):
-	"""
-	Load feature-extraction hyperparameters for a given model folder.
-
-	Reads best_params.json from model_folder if present and merges it over
-	DEFAULT_MODEL_PARAMS, so a partial file (or a missing/unreadable one)
-	still yields a complete, usable set of params. Never raises.
-	"""
-	params = dict(DEFAULT_MODEL_PARAMS)
-	params_path = os.path.join(model_folder, "best_params.json")
-	if os.path.isfile(params_path):
-		try:
-			with open(params_path, "r") as f:
-				params.update(json.load(f))
-		except Exception as err:
-			print(f"[loadModelParams] Failed to read {params_path}, using defaults: {err}")
-	return params
-
-def useModelToPredict(test_file_path, model_folder="Model/"):
-	"""
-	Use the model to predict the label of the given file.
-	"""
-
-	model_path = os.path.join(model_folder, "model.pkl")
-
-	# モデルとスケーラーをロード
-	svm = joblib.load(model_path)
-
-	# 特徴量を抽出
-	features = process_file(test_file_path, model_folder=model_folder)
-
-	# 予測を実行
-	predictions = svm.predict(features)
-	return int(predictions[0])
-
-# Bit for each stimulus label included in an epoch_pattern:
-#   bit 0 (1) = label 1, bit 1 (2) = label 2, bit 2 (4) = label 3.
-# This matches the two known patterns: 6 (2+4) = labels {2,3} (the
-# previously-hardcoded behavior), 7 (1+2+4) = labels {1,2,3}, i.e. every
-# label concatenated with nothing left out ("just flattened"). Selected
-# labels' mean ERPs are concatenated in ascending label order, so the
-# feature vector length always matches what a model trained on the same
-# epoch_pattern value expects.
-EPOCH_PATTERN_LABEL_BITS = {1: 0b001, 2: 0b010, 3: 0b100}
-
-def buildEpochPatternFeatures(erp_epochs, epoch_labels, epoch_pattern):
-	selected_labels = [label for label, bit in EPOCH_PATTERN_LABEL_BITS.items() if int(epoch_pattern) & bit]
-	if not selected_labels:
-		selected_labels = sorted(EPOCH_PATTERN_LABEL_BITS)
-
-	parts = []
-	for label in selected_labels:
-		label_epochs = erp_epochs[epoch_labels == label]
-		parts.append(np.mean(label_epochs, axis=0).flatten())
-	return np.concatenate(parts)
-
-def process_file(file_path, model_folder="Model/", use_mean_features=True):
-	# データ処理と特徴量抽出を行う関数
-	params = loadModelParams(model_folder)
-	original_sampling_rate = 250
-	numtaps = params["numtaps"]
-
-	# CSVファイルを読み込む
-	data = pd.read_csv(file_path).values
-	
-	# 刺激ラベルの列を取得
-	stimulus_labels = data[:, 9]
-	
-	# NaNをゼロに置き換え（または適切な値に置き換え）
-	stimulus_labels = np.nan_to_num(stimulus_labels, nan=0)
-	
-	# 刺激オンセットのインデックスを取得
-	stimulus_onsets = np.where(np.diff(stimulus_labels) != 0)[0] + 1
-	stimulus_onsets = stimulus_onsets[stimulus_labels[stimulus_onsets] != 0]
-
-	# 脳波データ（ch5列目のみ）を取得
-	# バンドパスフィルタの設計
-	nyquist_rate = original_sampling_rate / 2
-	low_cutoff = params["low_cutoff"] / nyquist_rate
-	high_cutoff = params["high_cutoff"] / nyquist_rate
-	b = firwin(numtaps, [low_cutoff, high_cutoff], pass_zero=False)
-	
-	# EEGデータを取得（多極対応）
-	eeg_data = data[:, [i for i, col in enumerate(pd.read_csv(file_path, nrows=0).columns) if "Ch" in col]]*-1
-				
-	eeg_data = StandardScaler().fit_transform(eeg_data)
-
-	# フィルタリング方法を選択
-	use_filter = "filtfilt"  # Options: "filtfilt", "lfilter", or None
-
-	if use_filter == "filtfilt":
-		# フィルタを適用 (filtfiltで遅延をなくす)
-		eeg_data = filtfilt(b, 1.0, eeg_data, axis=0)
-	elif use_filter == "lfilter":
-		# フィルタを適用 (lfilter)
-		eeg_data = lfilter(b, 1.0, eeg_data, axis=0)
-	elif use_filter is None:
-		# フィルタを適用しない
+	def handle_events(self, event):
 		pass
-		
-	# エポック毎のERPを計算
-	erp_epochs, pure_erp_epochs = compute_erp(
-		eeg_data,
-		stimulus_onsets,
-		downsampling_rate=params["downsampling_rate"],
-		baseline_length=params["baseline_length"],
-	)
 
-	features = []
-	if use_mean_features:
-		diff_erp = buildEpochPatternFeatures(erp_epochs, stimulus_labels[stimulus_onsets], params["epoch_pattern"])
-		features.append(diff_erp)
+	def update(self):
+		pass
 
-	else:
-		# 刺激ラベルが1と3のエポックを分ける
-		erp_label_1 = erp_epochs[stimulus_labels[stimulus_onsets] == 1]
-		erp_label_3 = erp_epochs[stimulus_labels[stimulus_onsets] == 3]
-		
-		# 各エポックの電極平均を計算して特徴量に追加
-		for epoch_1, epoch_3 in zip(erp_label_1, erp_label_3):
-			mean_epoch_1 = np.mean(epoch_1, axis=1)  # 電極平均
-			mean_epoch_3 = np.mean(epoch_3, axis=1)  # 電極平均
-			concatenated_erp = np.concatenate((
-				mean_epoch_1.flatten(), 
-				mean_epoch_3.flatten()
-			))
-			features.append(concatenated_erp)
-	
-	return np.vstack(features)
+	def draw(self, surface):
+		pass
 
-def compute_erp(data, stimulus_onsets, downsampling_rate=10, baseline_length=5):
-	window_size = 250
-	diff_downsampling_rate = 25
-	fir_delay = 0
+	def on_enter(self):
+		pass
 
-	downsampling_factor = window_size // downsampling_rate
-	diff_downsampling_factor = window_size // diff_downsampling_rate
-	erp = []
-	features = []
-	for onset in stimulus_onsets:
-		if onset + window_size <= data.shape[0]:
-			# ベースライン区間を計算
-			baseline_start = max(0, onset - baseline_length - fir_delay)
-			baseline_end = onset - fir_delay
-			baseline = data[baseline_start:baseline_end].mean(axis=0)
-			segment = data[onset - fir_delay:onset + window_size - fir_delay] - baseline
-			# # 区間を平均してダウンサンプリング
-			downsampled_segment = segment.reshape(-1, downsampling_factor, segment.shape[1]).mean(axis=1)
+# --- Welcome Scene ---
+class WelcomeScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.font_en = pygame.font.Font(notoFont, 36)  # English
+		self.font_jp = pygame.font.Font(notoFont, 36)  # Japanese
 
-			# diff_downsampled_segment = segment.reshape(-1, diff_downsampling_factor, segment.shape[1]).mean(axis=1)
+	def handle_events(self, event):
+		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
+			self.app.switch_scene("wifi_check")  # go to wifi_check
+	def draw(self, surface):
+		surface.fill(white)
 
-			if False:  # 変化率特徴量を計算する場合はTrueに変更
-				# 変化率特徴量を計算
-				rate_of_change = np.diff(diff_downsampled_segment, axis=0)
+		# English text (top)
+		text_surface_en = self.font_en.render("Welcome to BMI Trainer", True, black)
+		text_rect_en = text_surface_en.get_rect(center=(240, 110))
+		surface.blit(text_surface_en, text_rect_en)
 
-				# 刺激後1秒間のデータを取得
-				combined_features = np.concatenate((downsampled_segment, rate_of_change), axis=0)
-				features.append(combined_features)
-			else:
-				features.append(downsampled_segment)
+		# Japanese text (bottom)
+		text_surface_jp = self.font_jp.render("BMIトレーナーへようこそ", True, black)
+		text_rect_jp = text_surface_jp.get_rect(center=(240, 190))
+		surface.blit(text_surface_jp, text_rect_jp)
 
-	for onset in stimulus_onsets:
-		if onset + window_size <= data.shape[0]:
-			# ベースライン区間を計算
-			baseline_start = max(0, onset - baseline_length - fir_delay)
-			baseline_end = onset - fir_delay
-			baseline = data[baseline_start:baseline_end].mean(axis=0)
-			segment = data[onset - fir_delay:onset + window_size - fir_delay] - baseline
-			# # 区間を平均してダウンサンプリング
-			downsampled_segment = segment.reshape(-1, downsampling_factor, segment.shape[1]).mean(axis=1)
+# --- Main Menu Scene (placeholder) ---
+class WiFiCheckScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.font_en = pygame.font.Font(notoFont, 22)
+		self.font_jp = pygame.font.Font(notoFont, 22)
+		self.status = "checking"  # "checking", "success", or "fail"
+		self.last_check_time = 0
+		self.retry_interval = 3  # seconds between retry attempts
+  
+		# Spinner setup
+		self.spinner_angle = 0
+		self.spinner_radius = 20
+		self.spinner_center = (440, 280)  # adjust as needed
+		self.spinner_speed = -2  # degrees per frame
+
+	def handle_events(self, event):
+		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
+			if self.status == "success":
+				self.app.switch_scene("bci_connect")  # go to bci_connect
+
+	def check_internet(self, host="8.8.8.8", port=443, timeout=2):
+		try:
+			socket.setdefaulttimeout(timeout)
+			s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			s.connect((host, port))
+			s.close()
+			return True
+		except Exception:
+			return False
+
+	def update(self):
+		current_time = time.time()
+  
+		# Rotate spinner continuously
+		self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+  
+		# Only retry if not already successful AND retry interval has passed
+		if self.status != "success" and current_time - self.last_check_time > self.retry_interval:
+			self.last_check_time = current_time
+			self.status = "checking"  # show checking message first
+			pygame.display.flip()     # force draw immediately
 			
-			# diff_downsampled_segment = segment.reshape(-1, diff_downsampling_factor, segment.shape[1]).mean(axis=1)
-			
-			if False:  # 変化率特徴量を計算する場合はTrueに変更
-				# 変化率特徴量を計算
-				rate_of_change = np.diff(diff_downsampled_segment, axis=0)
-
-				# 刺激後1秒間のデータを取得
-				combined_features = np.concatenate((downsampled_segment, rate_of_change), axis=0)
-				erp.append(combined_features)
+			# Developer mode override - skip internet check
+			if self.app.developer_mode:
+				self.status = "success"
+			elif self.check_internet():
+				self.status = "success"
 			else:
-				erp.append(downsampled_segment)
-				
-	return np.array(features), np.array(erp)
+				self.status = "fail"
+
+	def draw(self, surface):
+		surface.fill(white)
+
+		if self.status == "checking":
+			msg_en = "Checking internet connection,\nplease wait..."
+			msg_jp = "インターネット接続を確認中です、\nしばらくお待ちください"
+		elif self.status == "success":
+			msg_en = "Internet connection is successful,\nyou may continue."
+			msg_jp = "インターネット接続に成功しました、\n続行できます"
+		else:  # fail
+			msg_en = "Internet connection failed,\nretrying..."
+			msg_jp = "インターネット接続に失敗しました、\n再試行中です..."
+
+		# Draw English and Japanese text
+		draw_text_wrapped(surface, msg_en, self.font_en, black, x=40, y=70, max_width=400)
+		draw_text_wrapped(surface, msg_jp, self.font_jp, black, x=40, y=170, max_width=400, lang="jp")
+  
+		# Draw spinner if checking or retrying
+		if self.status in ["checking", "fail"]:
+			num_lines = 12
+			for i in range(num_lines):
+				angle_deg = (360 / num_lines) * i + self.spinner_angle
+				angle_rad = math.radians(angle_deg)
+				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
+# --- BCI Connection Check Scene ---
+class BCIConnectScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.font_en = pygame.font.Font(notoFont, 22)
+		self.font_jp = pygame.font.Font(notoFont, 22)
+		self.status = "checking"  # "checking", "connected", "wait_cables", "failed"
+		self.last_check_time = 0
+		self.retry_interval = 3  # seconds between retries
+		self.retry_count = 0
+		self.max_retries = 8
+		self.board = None
+
+		# Spinner setup
+		self.spinner_angle = 0
+		self.spinner_radius = 20
+		self.spinner_center = (440, 280)
+		self.spinner_speed = -2  # degrees per frame
+
+		# Timer for showing "connected" message
+		self.connected_time = None
+
+	def handle_events(self, event):
+		pass  # no interaction for now
+
+	def update(self):
+		current_time = time.time()
+		self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+
+		if self.status == "checking" and current_time - self.last_check_time > self.retry_interval:
+			self.last_check_time = current_time
+			threading.Thread(target=self._try_connect, daemon=True).start()
+
+		if self.status == "connected" and current_time - self.connected_time >= 1:
+			if self.app.developer_mode:
+				self.app.switch_scene("trainer") #SKIP IMPEDANCE
+			else:
+				self.app.switch_scene("impedance_check_gray")# Automatically move to first cable check (Gray)
+
+	def _try_connect(self):
+		
+		# Developer mode override - skip actual BCI connection
+		if self.app.developer_mode and self.app.dev_skip_bci_connect:
+			self.status = "connected"
+			self.connected_time = time.time()
+			self.retry_count = 0
+			# Create a mock board object for developer mode
+			self.app.bciboard = None  # Will be handled by other scenes
+			return
+			
+		try:
+			self.board = ABMI_Utils.BCIBoard(port="/dev/bci_dongle")
+			success = self.board.connect()
+			if success:
+				self.status = "connected"
+				self.connected_time = time.time()
+				self.retry_count = 0
+				# Make the board globally accessible to other scenes
+				self.app.bciboard = self.board
+			else:
+				raise RuntimeError("Connection failed")
+			
+		except Exception as e:
+			self.retry_count += 1
+			if self.retry_count >= self.max_retries:
+				print("Connection Failed")
+				self.status = "failed"
+			else:
+				print("Connection Failed, Retrying...")
+				self.status = "checking"
+
+	def draw(self, surface):
+		surface.fill(white)
+
+		if self.status == "checking":
+			msg_en = "Checking for board connection, please wait..."
+			msg_jp = "ボード接続を確認中です、\nしばらくお待ちください..."
+		elif self.status == "connected":
+			msg_en = "BCI Device Connected"
+			msg_jp = "BCIデバイスが接続されました"
+		elif self.status == "failed":
+			msg_en = "Failed to connect to BCI Device\nPlease try again or contact support"
+			msg_jp = "BCIデバイスの接続に失敗しました\n再試行するかサポートに連絡してください"
+		else:
+			msg_en = ""
+			msg_jp = ""
+
+		# Draw English and Japanese text
+		draw_text_wrapped(surface, msg_en, self.font_en, black, x=40, y=70, max_width=400)
+		draw_text_wrapped(surface, msg_jp, self.font_jp, black, x=40, y=170, max_width=420, lang="jp")
+		
+		# Draw spinner if checking
+		if self.status == "checking":
+			num_lines = 12
+			for i in range(num_lines):
+				angle_deg = (360 / num_lines) * i + self.spinner_angle
+				angle_rad = math.radians(angle_deg)
+				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
+# --- Impedance Check Single Scene (for individual cables) ---
+class ImpedanceCheckSingleScene(Scene):
+	def __init__(self, app, cable_index, cable_name, cable_color_rgb):
+		super().__init__(app)
+		self.font_en = pygame.font.Font(notoFont, 24)
+		self.font_jp = pygame.font.Font(notoFont, 24)
+		self.status = "waiting"  # "waiting", "checking", "done"
+		self.result = None
+		self.cable_index = cable_index  # 0-based index
+		self.cable_name = cable_name    # e.g., "Gray", "Purple", etc.
+		self.cable_color_rgb = cable_color_rgb
+		
+		# Spinner setup
+		self.spinner_angle = 0
+		self.spinner_radius = 15
+		self.spinner_center = (240, 260)  # bottom-left spinner
+		self.spinner_speed = -5
+		
+		# Developer mode simulation timing
+		self.dev_sim_start_time = None
+		self.dev_sim_duration = 1.0  # seconds
+
+	def handle_events(self, event):
+		pass  # no interaction during checking
+
+	def reset(self):
+		self.status = "waiting"
+		self.result = None
+		self.dev_sim_start_time = None
+
+	def start_impedance_check(self):
+		self.status = "checking"
+		if self.app.developer_mode:
+			# Start non-blocking simulation timing
+			self.dev_sim_start_time = time.time()
+			# Precompute simulated result for this cable
+			simulated_impedances = [40.8, 59.23, 40.0, 25.5, 75.2, 12.5, 85.7, 45.3]
+			self.result = simulated_impedances[self.cable_index]
+		else:
+			threading.Thread(target=self._impedance_worker, daemon=True).start()
+
+	def _impedance_worker(self):
+		self.status = "checking"
+		
+		# Developer mode handled in update() non-blockingly
+		if self.app.developer_mode:
+			return
+			
+		# Normal mode - check actual board
+		if not hasattr(self.app, "bciboard") or self.app.bciboard is None:
+			self.result = float("nan")
+			self.status = "done"
+			return
+
+		try:
+			# check_impedance expects a list of channels (1-based)
+			channel_num = self.cable_index + 1
+			impedance_result = self.app.bciboard.check_impedance([channel_num])
+			self.result = impedance_result[0][1] if impedance_result else float("nan")
+		except Exception as e:
+			self.result = float("nan")
+
+		self.status = "done"
+
+	def update(self):
+     
+		if self.status == "waiting":
+			self.start_impedance_check()
+		elif self.status == "checking":
+			self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+			# Drive developer-mode non-blocking simulation timing
+			if self.app.developer_mode and self.dev_sim_start_time is not None:
+				elapsed = time.time() - self.dev_sim_start_time
+				if elapsed >= self.dev_sim_duration:
+					self.status = "done"
+		elif self.status == "done":
+			# Store result
+			self.app.current_cable_result = (self.cable_index, self.cable_name, self.result)
+
+			# Preload and prepare results scene before showing
+			results_scene = self.app.scenes["impedance_results_single"]
+			results_scene.cable_index = self.cable_index
+			results_scene.cable_name = self.cable_name
+			results_scene.impedance_value = self.result
+			results_scene.retry_needed = (
+				np.isnan(self.result) or self.result >= 100
+			)
+
+			# Now switch after it's fully ready
+			self.app.switch_scene("impedance_results_single")
+
+	def draw(self, surface):
+		surface.fill(white)
+
+		# --- Left side texts ---
+		x_text = 30
+		y_text = 60
+		# Checking specific cable connection
+		cable_msg_en = f"Checking {self.cable_name} cable connection..."
+		cable_msg_jp = f"{self.cable_name}ケーブル接続を確認中..."
+		draw_text_wrapped(surface, cable_msg_en, self.font_en, black, x=x_text, y=y_text, max_width=300)
+		draw_text_wrapped(surface, cable_msg_jp, self.font_jp, black, x=x_text, y=y_text+90, max_width=200, lang="jp")
+
+		# Spinner (only while checking)
+		if self.status == "checking":
+			num_lines = 12
+			for i in range(num_lines):
+				angle_deg = (360 / num_lines) * i + self.spinner_angle
+				angle_rad = math.radians(angle_deg)
+				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
+		# --- Right side cable square ---
+		square_size = 120
+		x_square = 320
+		y_square = 90
+		if self.status == "waiting":
+			cable_color_rgb = (0, 0, 0)  # Black for waiting
+		else:
+			cable_color_rgb = self.cable_color_rgb
+		border_thickness = 4
+
+		# Draw border
+		pygame.draw.rect(surface, black, (x_square, y_square, square_size, square_size), border_thickness)
+		# Fill inside
+		pygame.draw.rect(
+			surface,
+			cable_color_rgb,
+			(
+				x_square + border_thickness,
+				y_square + border_thickness,
+				square_size - 2 * border_thickness,
+				square_size - 2 * border_thickness
+			)
+		)
+
+# --- Impedance Results Single Scene (for individual cables) ---
+class ImpedanceResultsSingleScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.font_en = pygame.font.Font(notoFont, 20)
+		self.font_jp = pygame.font.Font(notoFont, 18)
+		self.font_large = pygame.font.Font(notoFont, 24)
+		
+		# Results will be set when switching to this scene
+		self.cable_index = None
+		self.cable_name = None
+		self.impedance_value = None
+		self.retry_needed = False
+
+	def _advance_to_next_cable(self):
+		"""Switch to the next cable scene or trainer when complete."""
+		if self.cable_index is None:
+			return
+
+		next_index = self.cable_index + 1
+		if next_index < len(ABMI_Utils.CABLE_COLORS):
+			next_cable_name = ABMI_Utils.CABLE_COLORS[next_index]
+			self.app.switch_scene(f"impedance_check_{next_cable_name}")
+		else:
+			self.app.switch_scene("trainer")
+
+	def handle_events(self, event):
+		if event.type == pygame.KEYDOWN and event.key == pygame.K_b and self.retry_needed:
+			print(f"Bypassing retry for {self.cable_name}, moving to next cable.")
+			self._advance_to_next_cable()
+			return
+
+		if event.type == pygame.KEYDOWN and event.key == pygame.K_x and self.retry_needed:
+			print(f"Skipping all cables and moving to trainer.")
+			self.app.switch_scene("trainer")
+			return
+
+		if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
+			if self.retry_needed:
+				scene_key = f"impedance_check_{self.cable_name.lower()}"
+				print(f"Retrying impedance check for {self.cable_name}...")
+
+				# Reset the status so the check starts over
+				cable_scene = self.app.scenes[scene_key]
+				cable_scene.status = "waiting"
+				cable_scene.result = None
+				cable_scene.dev_sim_start_time = None  # if in developer mode
+
+				self.app.switch_scene(scene_key)
+				return
+
+			self._advance_to_next_cable()
+
+	def update(self):
+		if hasattr(self.app, 'current_cable_result'):
+			self.cable_index, self.cable_name, self.impedance_value = self.app.current_cable_result
+
+	def draw(self, surface):
+		surface.fill(white)
+		
+		if self.cable_name is None:
+			return
+		
+		if not np.isnan(self.impedance_value):
+			# Determine color and retry flag
+			if self.impedance_value < 50:
+				value_color = green
+				status_text, status_jp = "EXCELLENT", "優秀"
+				self.retry_needed = False
+			elif self.impedance_value < 100:
+				value_color = warning_orange
+				status_text, status_jp = "GOOD", "良好"
+				self.retry_needed = False
+			else:
+				value_color = red
+				status_text, status_jp = "POOR", "不良"
+				self.retry_needed = True
+		else:
+			value_color = red
+			status_text, status_jp = "ERROR", "接続エラー"
+			self.retry_needed = True
+
+		# Shift all text upward if retry needed
+		y_offset = -30 if self.retry_needed else 0
+
+		# Titles
+		title_en = f"{self.cable_name} Cable Result"
+		title_jp = f"{self.cable_name}ケーブル結果"
+		title_surface_en = self.font_large.render(title_en, True, black)
+		title_surface_jp = self.font_large.render(title_jp, True, black)
+		surface.blit(title_surface_en, title_surface_en.get_rect(center=(240, 80 + y_offset)))
+		surface.blit(title_surface_jp, title_surface_jp.get_rect(center=(240, 120 + y_offset)))
+
+		# Impedance text (skip if NaN handled below)
+		if not np.isnan(self.impedance_value):
+			imp_text = f"{self.impedance_value:.1f} kΩ"
+			imp_surface = self.font_large.render(imp_text, True, value_color)
+			surface.blit(imp_surface, imp_surface.get_rect(center=(240, 170 + y_offset)))
+
+			status_surface_en = self.font_en.render(status_text, True, value_color)
+			status_surface_jp = self.font_jp.render(status_jp, True, value_color)
+			surface.blit(status_surface_en, status_surface_en.get_rect(center=(240, 200 + y_offset)))
+			surface.blit(status_surface_jp, status_surface_jp.get_rect(center=(240, 230 + y_offset)))
+		else:
+			err_en = self.font_large.render("CONNECTION ERROR", True, red)
+			err_jp = self.font_jp.render("接続エラー", True, red)
+			surface.blit(err_en, err_en.get_rect(center=(240, 180 + y_offset)))
+			surface.blit(err_jp, err_jp.get_rect(center=(240, 210 + y_offset)))
+
+		# Retry message
+		if self.retry_needed:
+			msg_en = "Please fix the cable connection and retry."
+			msg_jp = "ケーブルの接続を直して、再試行してください。"
+			msg_surface_en = self.font_en.render(msg_en, True, black)
+			msg_surface_jp = self.font_jp.render(msg_jp, True, black)
+			surface.blit(msg_surface_en, msg_surface_en.get_rect(center=(240, 280 + y_offset)))
+			surface.blit(msg_surface_jp, msg_surface_jp.get_rect(center=(240, 310 + y_offset)))
+
+# --- Trainer Scene ---
+class TrainerScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.app = app
+		self.app.user_id = ABMI_Utils.getUserID("BMI Trainer Data/UserID.txt")
+		ABMI_Utils.deleteEmptyFolders(base_path="BMI Trainer Data/") #Delete empty folders before creating a Session Folder
+		self.app.session_Folder = ABMI_Utils.createSessionFolder(self.app.user_id, datetime.datetime.now(), base_path="BMI Trainer Data/")
+		self.app.model_Folder = ABMI_Utils.createModelFolder(base_path="Model/")
+		self.app.testing_Folder = ABMI_Utils.createTestingFolder(base_path="Testing/")
+		self.buttons = []
+
+		# Button Creation
+		self.add_button("Train BMI", 10, 15, 200, 90, self.train_bmi, font_size=28, color=soft_green)
+		self.add_button("Delete Recent", 10, 115, 200, 90, self.delete_recent, font_size=24, color=light_red)
+		self.add_button("Check Impedance", 10, 215, 200, 90, self.check_impedance, font_size=20, color=cool_blue)
+		self.add_button("Left", 220, 215, 80, 90, self.audio_left, font_size=20, color=white)
+		self.add_button("Center", 305, 215, 80, 90, self.audio_center, font_size=20, color=white)
+		self.add_button("Right", 390, 215, 80, 90, self.audio_right, font_size=20, color=white)
+		self.add_button("Continue →", 255, 100, 180, 70, self.continue_upload, font_size=24, color=warning_orange)
+
+		#Font for labels like "Test Audio"
+		self.label_font = pygame.font.Font(notoFont, 24)
+		self.userid_font = pygame.font.Font(notoFont, 22)
+
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
+		}
+		self.buttons.append(button)
+
+	def train_bmi(self):
+		print("Train BMI clicked! Switching to CollectDataSingleScene...")
+		self.app.switch_scene("collect_data_single")
+
+	def delete_recent(self):
+		ABMI_Utils.deleteMostRecent(base_path="BMI Trainer Data/")
+		self.app.refresh_lcr_count()
+
+	def check_impedance(self):
+		print("Restarting impedance check sequence...")
+
+		# --- Reset impedance data ---
+		self.app.impedance_results = []
+		self.app.current_cable_result = None
+
+		# --- Reset each ImpedanceCheckSingleScene state ---
+		for scene_name, scene_obj in self.app.scenes.items():
+			if isinstance(scene_obj, ImpedanceCheckSingleScene):
+				scene_obj.reset()
+
+		# --- Jump to first impedance check scene ---
+		first_cable = ABMI_Utils.CABLE_COLORS[0]
+		scene_name = f"impedance_check_{first_cable}"
+		if scene_name in self.app.scenes:
+			self.app.switch_scene(scene_name)
+		else:
+			print(f"Scene '{scene_name}' not found!")
+
+	def continue_upload(self):
+		self.app.switch_scene("upload_to_cloud")
+
+	def audio_left(self):
+		ABMI_Utils.play_single_sound('Sounds/beep_left.wav')
+
+	def audio_center(self):
+		ABMI_Utils.play_single_sound('Sounds/beep_center.wav')
+
+	def audio_right(self):
+		ABMI_Utils.play_single_sound('Sounds/beep_right.wav')
+
+	def handle_events(self, event):
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					btn["callback"]()
+
+	def update(self):
+		if self.app.developer_mode:
+			return
+		elif not self.app.bciboard.connected:
+			self.app.switch_scene("emergency")
+		pass
+
+	def draw(self, surface):
+		surface.fill(white)
+
+		# --- Draw "Test Audio" label ---
+		label_surface = self.label_font.render("Test Audio", True, black)
+		label_rect = label_surface.get_rect(center=(345, 195))  # center above audio buttons
+		surface.blit(label_surface, label_rect)
+
+		# --- Draw User ID (top right) ---
+		user_text = f"User ID: {self.app.user_id}"
+		user_surface = self.userid_font.render(user_text, True, black)
+		user_rect = user_surface.get_rect(topright=(surface.get_width() - 30, 10))
+		surface.blit(user_surface, user_rect)
+
+		# --- Draw User LCR Count ---
+		left_count, center_count, right_count = (self.app.recording_lcr_counts
+			if getattr(self.app, "recording_lcr_counts", None)
+			else (0, 0, 0))
+		lcr_text = f"L: {left_count}   C: {center_count}   R: {right_count}"
+		lcr_surface = self.userid_font.render(lcr_text, True, black)
+		lcr_rect = lcr_surface.get_rect(topright=(surface.get_width() - 30, user_rect.bottom + 8))
+		surface.blit(lcr_surface, lcr_rect)
+
+		# --- Draw buttons ---
+		for btn in self.buttons:
+			pygame.draw.rect(surface, btn["color"], btn["rect"])
+			pygame.draw.rect(surface, black, btn["rect"], 3)  # border
+			text_surface = btn["font"].render(btn["text"], True, black)
+			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			surface.blit(text_surface, text_rect)
+
+# --- Upload To Cloud Scene ---
+class UploadToCloudScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.app = app
+		self.title_font = pygame.font.Font(notoFont, 28)
+		self.count_font = pygame.font.Font(notoFont, 24)
+		self.status_font = pygame.font.Font(notoFont, 20)
+		self.buttons = []
+		self.cloudConnection = None
+		self.isConnected = False
+		self.cloudDataCount = 0
+		self.status_message = ""
+		self.uploading = False
+		self.upload_thread = None
+
+		# Spinner config (matches other scenes)
+		self.spinner_angle = 0
+		self.spinner_radius = 18
+		self.spinner_center = (self.app.render_w - 40, self.app.render_h - 40)
+		self.spinner_speed = -2
+
+		self.add_button("← Trainer", 15, 150, 140, 70, self.go_back, font_size=22, color=cool_blue)
+		self.add_button("Upload", 170, 140, 120, 90, self.upload_action, font_size=26, color=soft_green)
+		self.add_button("Download →", 305, 150, 160, 70, self.go_download, font_size=22, color=warning_orange)
+
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
+		}
+		self.buttons.append(button)
+
+	def on_enter(self):
+		self.status_message = ""
+		self.uploading = False
+		if not self.cloudConnection:
+			try:
+				self.cloudConnection = ABMI_Utils.CloudConnection(self.app.cloud_ip, self.app.cloud_user, self.app.cloud_password)
+				self.cloudConnection.connect()
+				self.isConnected = True
+			except Exception as err:
+				print(f"Cloud connection failed: {err}")
+				self.cloudConnection = None
+				self.isConnected = False
+		if self.cloudConnection:
+			try:
+				if not self.cloudConnection.folder_exists("/Training_Data/" + self.app.user_id):
+					print('User Folder not found, creating user folder for ' + str(self.app.user_id))
+					self.cloudConnection.create_user_folder("/Training_Data/" + self.app.user_id)
+				self.cloudDataCount = self.cloudConnection.count_files_in_folder("/Training_Data/" + self.app.user_id)
+				self.status_message = ""
+			except Exception as err:
+				print(f"Failed to refresh cloud data count: {err}")
+				self.status_message = "Failed to load cloud count"
+				self.cloudDataCount = 0
+
+	def go_back(self):
+		self.app.switch_scene("trainer")
+
+	def upload_action(self):
+		print("Uploading all files to cloud!")
+		if not self.cloudConnection:
+			self.status_message = "Not connected to cloud"
+			return
+		if self.uploading:
+			return
+		self.uploading = True
+		self.status_message = "Uploading..."
+		self.upload_thread = threading.Thread(target=self._run_upload, daemon=True)
+		self.upload_thread.start()
+
+	def _run_upload(self):
+		try:
+			files_uploaded = self.cloudConnection.upload_all_files(remote_root="/Training_Data/" + self.app.user_id, user_id=self.app.user_id, local_root="BMI Trainer Data")
+			print(f"Uploaded {files_uploaded} files to cloud.")
+			self.cloudDataCount = self.cloudConnection.count_files_in_folder("/Training_Data/" + self.app.user_id)
+			self.status_message = "Upload complete!" if files_uploaded else "No files to upload"
+		except Exception as err:
+			print(f"Upload failed: {err}")
+			self.status_message = "Upload failed"
+		finally:
+			self.uploading = False
+
+	def go_download(self):
+		self.app.switch_scene("download_from_cloud")
+
+	def handle_events(self, event):
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					btn["callback"]()
+
+	def update(self):
+		if self.uploading:
+			self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+
+	def draw(self, surface):
+		surface.fill(white)
+		
+		title_surface = self.title_font.render("Upload To Cloud", True, black)
+		title_rect = title_surface.get_rect(center=(surface.get_width() // 2, 60))
+		surface.blit(title_surface, title_rect)
+  
+		count_surface = self.count_font.render(f"Data Count: {self.cloudDataCount}", True, black)
+		count_rect = count_surface.get_rect(center=(surface.get_width() // 2, 100))
+		surface.blit(count_surface, count_rect)
+
+		status_surface = self.status_font.render(self.status_message, True, black)
+		status_rect = status_surface.get_rect(center=(surface.get_width() // 2, surface.get_height() - 30))
+		surface.blit(status_surface, status_rect)
+
+		if self.uploading:
+			num_lines = 12
+			for i in range(num_lines):
+				angle_deg = (360 / num_lines) * i + self.spinner_angle
+				angle_rad = math.radians(angle_deg)
+				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
+		for btn in self.buttons:
+			pygame.draw.rect(surface, btn["color"], btn["rect"])
+			pygame.draw.rect(surface, black, btn["rect"], 3)
+			text_surface = btn["font"].render(btn["text"], True, black)
+			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			surface.blit(text_surface, text_rect)
+
+# --- Download From Cloud Scene ---
+class DownloadFromCloudScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.app = app
+		self.title_font = pygame.font.Font(notoFont, 28)
+		self.status_font = pygame.font.Font(notoFont, 24)
+		self.message_font = pygame.font.Font(notoFont, 20)
+		self.buttons = []
+		self.cloudConnection = None
+		self.model_available = False
+		self.availability_message = "Checking..."
+		self.bottom_message = ""
+		self.downloading = False
+		self.download_thread = None
+
+		self.spinner_angle = 0
+		self.spinner_radius = 18
+		self.spinner_center = (self.app.render_w - 40, self.app.render_h - 40)
+		self.spinner_speed = -2
+
+		self.add_button("← Upload", 15, 150, 140, 70, self.go_upload, font_size=22, color=cool_blue)
+		self.add_button("Download", 170, 140, 140, 90, self.download_action, font_size=24, color=soft_green)
+		self.add_button("Test →", 325, 150, 140, 70, self.go_test, font_size=22, color=warning_orange)
+
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
+		}
+		self.buttons.append(button)
+
+	def ensure_connection(self):
+		if not self.cloudConnection:
+			try:
+				self.cloudConnection = ABMI_Utils.CloudConnection(self.app.cloud_ip, self.app.cloud_user, self.app.cloud_password)
+				self.cloudConnection.connect()
+			except Exception as err:
+				print(f"Cloud connection failed: {err}")
+				self.cloudConnection = None
+
+	def on_enter(self):
+		self.bottom_message = ""
+		self.downloading = False
+		self.ensure_connection()
+		if not self.cloudConnection:
+			self.availability_message = "Unable to connect"
+			self.model_available = False
+			return
+		try:
+			count = self.cloudConnection.count_files_in_folder("/Models/" + self.app.user_id)
+			self.model_available = count > 0
+			self.availability_message = "Model Available" if self.model_available else "No Model Available"
+		except Exception as err:
+			print(f"Failed to query cloud data: {err}")
+			self.availability_message = "Failed to load"
+			self.model_available = False
+
+	def go_upload(self):
+		self.app.switch_scene("upload_to_cloud")
+
+	def download_action(self):
+		if not self.cloudConnection:
+			self.bottom_message = "Not connected to cloud"
+			return
+		if self.downloading:
+			return
+		self.downloading = True
+		self.bottom_message = "Downloading..."
+		self.download_thread = threading.Thread(target=self._run_download, daemon=True)
+		self.download_thread.start()
+
+	def _run_download(self):
+		try:
+			# Placeholder for future download logic
+			self.cloudConnection.download_all_files(remote_root="/Models/" + self.app.user_id, local_root="Model/")
+			self.bottom_message = "Download Complete"
+			print("Successfully downloaded model from cloud.")
+		except Exception as err:
+			print(f"Download failed: {err}")
+			self.bottom_message = "Download failed"
+		finally:
+			self.downloading = False
+
+	def go_test(self):
+		self.app.switch_scene("model_test")
+
+	def handle_events(self, event):
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					btn["callback"]()
+
+	def update(self):
+		if self.downloading:
+			self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+
+	def draw(self, surface):
+		surface.fill(white)
+		title_surface = self.title_font.render("Download From Cloud", True, black)
+		title_rect = title_surface.get_rect(center=(surface.get_width() // 2, 60))
+		surface.blit(title_surface, title_rect)
+
+		status_surface = self.status_font.render(self.availability_message, True, black)
+		status_rect = status_surface.get_rect(center=(surface.get_width() // 2, 100))
+		surface.blit(status_surface, status_rect)
+
+		for btn in self.buttons:
+			pygame.draw.rect(surface, btn["color"], btn["rect"])
+			pygame.draw.rect(surface, black, btn["rect"], 3)
+			text_surface = btn["font"].render(btn["text"], True, black)
+			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			surface.blit(text_surface, text_rect)
+
+		bottom_surface = self.message_font.render(self.bottom_message, True, black)
+		bottom_rect = bottom_surface.get_rect(center=(surface.get_width() // 2, surface.get_height() - 30))
+		surface.blit(bottom_surface, bottom_rect)
+
+		if self.downloading:
+			num_lines = 12
+			for i in range(num_lines):
+				angle_deg = (360 / num_lines) * i + self.spinner_angle
+				angle_rad = math.radians(angle_deg)
+				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
+# --- Model Test Scene ---
+class ModelTestScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.app = app
+		self.title_font = pygame.font.Font(notoFont, 28)
+		self.status_font = pygame.font.Font(notoFont, 22)
+		self.buttons = []
+		self.state = "idle"  # idle, collecting, confirm, label
+		self.bottom_message = ""
+		self.prediction_message = ""
+		self.is_collecting = False
+		self.sequence_thread = None
+		self.sequence_stop_event = None
+		self.latest_test_file = None
+		self.predicted_lcr = None
+		self.awaiting_result = False
+
+		self.spinner_angle = 0
+		self.spinner_radius = 18
+		self.spinner_center = (self.app.render_w - 40, self.app.render_h - 40)
+		self.spinner_speed = -2
+
+		self.configure_buttons()
+
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
+		}
+		self.buttons.append(button)
+
+	def configure_buttons(self):
+		self.buttons = []
+		if self.state == "idle":
+			self.add_button("← Download", 25, 160, 170, 70, self.go_back, font_size=22, color=cool_blue)
+			self.add_button("Begin", 210, 145, 160, 100, self.begin_action, font_size=30, color=soft_green)
+		elif self.state == "collecting":
+			self.add_button("Cancel", 165, 160, 150, 70, self.cancel_action, font_size=26, color=light_red)
+		elif self.state == "confirm":
+			self.add_button("No", 60, 170, 140, 80, self.discard_action, font_size=26, color=light_red)
+			self.add_button("Yes", 260, 170, 160, 80, self.save_action, font_size=26, color=soft_green)
+		elif self.state == "label":
+			self.add_button("Left", 20, 165, 130, 80, lambda: self.label_action(1), font_size=24, color=white)
+			self.add_button("Center", 175, 165, 130, 80, lambda: self.label_action(2), font_size=24, color=white)
+			self.add_button("Right", 330, 165, 130, 80, lambda: self.label_action(3), font_size=24, color=white)
+
+	def set_state(self, new_state):
+		self.state = new_state
+		if new_state == "idle":
+			self.is_collecting = False
+			self.sequence_thread = None
+			self.sequence_stop_event = None
+			self.predicted_lcr = None
+			self.awaiting_result = False
+			if not self.bottom_message.startswith("Saved"):
+				self.bottom_message = ""
+		elif new_state == "collecting":
+			self.is_collecting = True
+			self.bottom_message = "Collecting data"
+		elif new_state == "confirm":
+			self.is_collecting = False
+			self.bottom_message = ""
+		elif new_state == "label":
+			self.is_collecting = False
+			self.bottom_message = ""
+		self.configure_buttons()
+
+	def go_back(self):
+		if self.state == "collecting":
+			return
+		self.app.switch_scene("download_from_cloud")
+
+	def begin_action(self):
+		if self.state != "idle" or self.is_collecting:
+			return
+		board = getattr(self.app, "bciboard", None)
+		if board is None:
+			self.bottom_message = "No BCIBoard available"
+			return
+		if not getattr(board, "connected", False):
+			self.bottom_message = "Board not connected"
+			return
+		if not getattr(board, "streaming", False):
+			try:
+				board.stream()
+			except Exception as err:
+				print(f"Failed to start board stream: {err}")
+				self.bottom_message = "Stream failed"
+				return
+
+		timestamp = datetime.datetime.now()
+		lcr_choice = 0
+		if hasattr(timestamp, 'strftime'):
+			timestamp_str = timestamp.strftime('%Y-%m-%d-%H-%M-%S')
+		else:
+			timestamp_str = str(timestamp)
+		self.latest_test_file = os.path.join(self.app.testing_Folder, f"{self.app.user_id}-{timestamp_str}-{lcr_choice}.csv")
+
+		try:
+			self.sequence_thread, self.sequence_stop_event = ABMI_Utils.startSingleTrainingSequence(
+				board, self.app.user_id, timestamp, lcr_choice, self.app.testing_Folder
+			)
+			self.awaiting_result = True
+			self.set_state("collecting")
+
+			def _wait_and_predict():
+				self.sequence_thread.join()
+				if not self.awaiting_result:
+					return
+				self.sequence_thread = None
+				self.sequence_stop_event = None
+				if not self.latest_test_file:
+					self.bottom_message = "No test result found"
+				else:
+					try:
+						result = ABMI_Utils.useModelToPredict(self.latest_test_file, self.app.model_Folder)
+						if isinstance(result, np.ndarray):
+							result = int(result[0])
+						self.predicted_lcr = result
+						if result == -1:
+							self.prediction_message = "Prediction failed"
+							ABMI_Utils.play_single_sound("Sounds/prediction_unknown.wav")
+						else:
+							label_map = {1: "Left", 2: "Center", 3: "Right"}
+							self.prediction_message = f"Model predicted: {label_map.get(result, 'Unknown')}"
+							sound_map = {
+								1: "Sounds/prediction_left.wav",
+								2: "Sounds/prediction_center.wav",
+								3: "Sounds/prediction_right.wav"
+							}
+							ABMI_Utils.play_single_sound(sound_map.get(result, "Sounds/prediction_unknown.wav"))
+					except Exception as err:
+						print(f"Model prediction failed: {err}")
+						self.prediction_message = "Prediction error"
+						self.predicted_lcr = -1
+						ABMI_Utils.play_single_sound("Sounds/prediction_unknown.wav")
+				self.awaiting_result = False
+				self.set_state("confirm")
+
+			threading.Thread(target=_wait_and_predict, daemon=True).start()
+		except Exception as err:
+			print(f"Model test failed to start: {err}")
+			self.sequence_thread = None
+			self.sequence_stop_event = None
+			self.latest_test_file = None
+			self.awaiting_result = False
+			self.bottom_message = "Test failed to start"
+
+	def cancel_action(self):
+		if self.sequence_stop_event:
+			self.sequence_stop_event.set()
+		self.set_state("idle")
+		self.bottom_message = "Test cancelled"
+
+	def discard_action(self):
+		ABMI_Utils.deleteTestingFiles(base_path=self.app.testing_Folder)
+		self.latest_test_file = None
+		self.awaiting_result = False
+		self.set_state("idle")
+		self.bottom_message = "Data discarded"
+
+	def save_action(self):
+		self.set_state("label")
+
+	def label_action(self, lcr_value):
+		if not self.latest_test_file:
+			self.bottom_message = "No test file to save"
+			self.set_state("idle")
+			return
+
+		label_map = {1: "Left", 2: "Center", 3: "Right"}
+		label_text = label_map.get(lcr_value, "Unknown")
+		try:
+			ABMI_Utils.labelTestingFile(self.latest_test_file, self.app.session_Folder, lcr_value)
+			self.bottom_message = f"Saved: {label_text}"
+		except Exception as err:
+			print(f"Failed to label testing file: {err}")
+			self.bottom_message = "Save failed"
+		self.latest_test_file = None
+		self.awaiting_result = False
+		self.set_state("idle")
+
+	def handle_events(self, event):
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					btn["callback"]()
+
+	def update(self):
+		if self.is_collecting:
+			self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+		if self.sequence_thread and not self.sequence_thread.is_alive():
+			self.sequence_thread = None
+			self.sequence_stop_event = None
+			self.is_collecting = False
+
+	def draw(self, surface):
+		surface.fill(white)
+		if self.state == "confirm":
+			title = "Would you like to save this data?"
+		elif self.state == "label":
+			title = "Please label this data"
+		else:
+			title = "Test Current Model"
+
+		title_surface = self.title_font.render(title, True, black)
+		title_rect = title_surface.get_rect(center=(surface.get_width() // 2, 60))
+		surface.blit(title_surface, title_rect)
+
+		if self.state == "confirm":
+			description = self.prediction_message
+		elif self.state == "label":
+			description = "Which direction did you choose?"
+		else:
+			description = "Successful tests can be saved."
+		desc_surface = self.status_font.render(description, True, black)
+		desc_rect = desc_surface.get_rect(center=(surface.get_width() // 2, 110))
+		surface.blit(desc_surface, desc_rect)
+
+		for btn in self.buttons:
+			pygame.draw.rect(surface, btn["color"], btn["rect"])
+			pygame.draw.rect(surface, black, btn["rect"], 3)
+			text_surface = btn["font"].render(btn["text"], True, black)
+			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			surface.blit(text_surface, text_rect)
+
+		bottom_surface = self.status_font.render(self.bottom_message, True, black)
+		bottom_rect = bottom_surface.get_rect(center=(surface.get_width() // 2, surface.get_height() - 30))
+		surface.blit(bottom_surface, bottom_rect)
+
+		if self.is_collecting:
+			num_lines = 12
+			for i in range(num_lines):
+				angle_deg = (360 / num_lines) * i + self.spinner_angle
+				angle_rad = math.radians(angle_deg)
+				x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+				y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+				pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
+# --- Single Collection ---
+class CollectDataSingleScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.app = app
+		self.font_en = pygame.font.Font(notoFont, 20)
+		self.font_jp = pygame.font.Font(notoFont, 20)
+		self.message_en = "Collecting training data, in case of problem, please press Cancel..."
+		self.message_jp = "データ収集中。問題があればキャンセルを押してください..."
+		self.buttons = []
+		self.sequence_thread = None
+		self.sequence_stop_event = None
+
+		# Spinner setup
+		self.spinner_angle = 0
+		self.spinner_radius = 20
+		self.spinner_center = (480 - 50, 320 - 50)  # bottom right
+		self.spinner_speed = -2  # degrees per frame
+
+		# --- Cancel Button ---
+		self.add_button("Cancel", 165, 220, 150, 70, self.cancel_action, font_size=26, color=light_red)
+
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
+		}
+		self.buttons.append(button)
+
+	def cancel_action(self):
+		print("Cancel pressed — returning to Trainer Scene")
+		
+		self.sequence_stop_event.set()
+  
+		'''board = getattr(self.app, "bciboard", None)
+		if board and getattr(board, "recording", False):
+			try:
+				board.stop_recording()
+			except Exception:
+				pass'''
+
+	def emergency_cancel(self):
+		if self.sequence_stop_event:
+			self.sequence_stop_event.set()
+		self.sequence_thread = None
+		self.app.switch_scene("trainer")
+
+	def handle_events(self, event):
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					btn["callback"]()
+
+	def update(self):
+		# Rotate spinner continuously
+		self.spinner_angle = (self.spinner_angle + self.spinner_speed) % 360
+
+		#Get Board
+		board = getattr(self.app, "bciboard", None)
+
+		#Critical problem
+		if board is None:
+			print("No BCIBoard instance available")
+			self.emergency_cancel()
+			return
+		if not getattr(board, "connected", False):
+			print("Board Not Connected")
+			self.emergency_cancel()
+			return
+
+		#Make it stream
+		if not getattr(board, "streaming", False):
+			board.stream()
+
+		if not self.sequence_thread:
+			timestamp = datetime.datetime.now()
+			lcr_choice = ABMI_Utils.chooseNewLCRValue(self.app.recording_lcr_counts)
+			self.sequence_thread, self.sequence_stop_event = ABMI_Utils.startSingleTrainingSequence(board, self.app.user_id, timestamp, lcr_choice, self.app.session_Folder)
+
+		if self.sequence_thread:
+			if not self.sequence_thread.is_alive():
+				self.sequence_thread = None
+				self.app.switch_scene("trainer")
+
+	def draw(self, surface):
+		surface.fill(white)
+
+		# --- Messages (wrapped) ---
+		max_width = surface.get_width() - 120
+		start_y = 40
+
+		y_after_en = draw_text_wrapped(surface, self.message_en, self.font_en, black, 50, start_y, max_width, 8, 'en')
+		y_after_jp = draw_text_wrapped(surface, self.message_jp, self.font_jp, black, 50, start_y + y_after_en + 5, max_width, 8, 'jp')
+
+		# --- Buttons ---
+		for btn in self.buttons:
+			pygame.draw.rect(surface, btn['color'], btn['rect'])
+			pygame.draw.rect(surface, black, btn['rect'], 3)
+			text_surface = btn['font'].render(btn['text'], True, black)
+			text_rect = text_surface.get_rect(center=btn['rect'].center)
+			surface.blit(text_surface, text_rect)
+
+		# Draw spinner
+		num_lines = 12
+		for i in range(num_lines):
+			angle_deg = (360 / num_lines) * i + self.spinner_angle
+			angle_rad = math.radians(angle_deg)
+			x = self.spinner_center[0] + self.spinner_radius * math.cos(angle_rad)
+			y = self.spinner_center[1] + self.spinner_radius * math.sin(angle_rad)
+			pygame.draw.circle(surface, black, (int(x), int(y)), 3)
+
+# --- Emergency Board Disconnected ---
+class EmergencyDisconnectedScene(Scene):
+	def __init__(self, app):
+		super().__init__(app)
+		self.app = app
+		self.font_en = pygame.font.Font(notoFont, 22)
+		self.font_jp = pygame.font.Font(notoFont, 22)
+		self.buttons = []
+		self.add_button("Reconnect", 150, 220, 180, 70, self.reconnect_action, font_size=26, color=light_green)
+
+	def add_button(self, text, x, y, w, h, callback, font_size=28, color=white):
+		button = {
+			"rect": pygame.Rect(x, y, w, h),
+			"text": text,
+			"callback": callback,
+			"font": pygame.font.Font(notoFont, font_size),
+			"color": color
+		}
+		self.buttons.append(button)
+
+	def reconnect_action(self):
+		print("Reconnect pressed")
+		self.app.bciboard.connect()
+
+	def handle_events(self, event):
+		if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+			mx, my = event.pos
+			for btn in self.buttons:
+				if btn["rect"].collidepoint(mx, my):
+					btn["callback"]()
+
+	def update(self):
+		if self.app.bciboard.connected:	
+			self.app.switch_scene("trainer")
+		pass
+
+	def draw(self, surface):
+		surface.fill(white)
+
+		en_text = "Emergency: BCIBoard connection is lost!"
+		jp_text = "緊急: BCIボードの接続が失われました!"
+
+		en_surface = self.font_en.render(en_text, True, red)
+		en_rect = en_surface.get_rect(center=(surface.get_width() // 2, 100))
+		surface.blit(en_surface, en_rect)
+
+		jp_surface = self.font_jp.render(jp_text, True, red)
+		jp_rect = jp_surface.get_rect(center=(surface.get_width() // 2, en_rect.bottom + 40))
+		surface.blit(jp_surface, jp_rect)
+
+		for btn in self.buttons:
+			pygame.draw.rect(surface, btn["color"], btn["rect"])
+			pygame.draw.rect(surface, black, btn["rect"], 3)
+			text_surface = btn["font"].render(btn["text"], True, black)
+			text_rect = text_surface.get_rect(center=btn["rect"].center)
+			surface.blit(text_surface, text_rect)
+
+# --- Main App Class ---
+class BMITrainer:
+	def __init__(self):
+		# Initialize Pygame
+		pygame.init()
+
+		# Force window position (top-left corner)
+		os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
+
+		# Open fixed 480x320 window
+		self.render_w, self.render_h = 480, 320
+		self.screen = pygame.display.set_mode((self.render_w, self.render_h), pygame.NOFRAME)
+		pygame.display.set_caption("BMI Trainer")
+
+		self.clock = pygame.time.Clock()
+		self.running = True
+
+		# Developer mode flags
+		self.developer_mode = False
+		self.dev_start_scene = "welcome"
+		self.dev_skip_bci_connect = False
+
+		self.bciboard = None
+		self.impedance_results = []
+		self.current_cable_result = None
+		self.user_id = None
+		self.session_Folder = None
+		self.model_Folder = None
+		self.testing_Folder = None
+		self.recording_lcr_counts = None
+  
+		#TCP credentials
+		self.cloud_ip = "131.113.139.72"
+		self.cloud_user = "ext_guest"
+		self.cloud_password = "GuestMoonshot01"
+
+		# Scenes
+		self.scenes = {
+			"welcome": WelcomeScene(self),
+			"wifi_check": WiFiCheckScene(self),
+			"bci_connect": BCIConnectScene(self),
+			"impedance_results_single": ImpedanceResultsSingleScene(self),
+			"trainer": TrainerScene(self),
+			"upload_to_cloud": UploadToCloudScene(self),
+			"download_from_cloud": DownloadFromCloudScene(self),
+			"model_test": ModelTestScene(self),
+			"collect_data_single": CollectDataSingleScene(self),
+			"emergency": EmergencyDisconnectedScene(self)
+		}
+		
+		# Add individual cable check scenes from canonical list in ABMI_Utils
+		for i, (name_lc, color) in enumerate(zip(ABMI_Utils.CABLE_COLORS, ABMI_Utils.CABLE_COLORS_RGB)):
+			name_title = name_lc.title()
+			scene_name = f"impedance_check_{name_lc}"
+			self.scenes[scene_name] = ImpedanceCheckSingleScene(self, i, name_title, color)
+		self.current_scene = self.scenes["welcome"]
+
+		# Set starting scene
+		if self.developer_mode and self.dev_start_scene in self.scenes:
+			self.current_scene = self.scenes[self.dev_start_scene]
+		else:
+			self.current_scene = self.scenes["welcome"]
+
+	def switch_scene(self, scene_name):
+		if scene_name in self.scenes:
+			if scene_name == 'trainer':
+				self.refresh_lcr_count()
+			self.current_scene = self.scenes[scene_name]
+			if hasattr(self.current_scene, 'on_enter'):
+				self.current_scene.on_enter()
+			if hasattr(self.current_scene, 'refresh_lcr_count'):
+				try:
+					self.current_scene.refresh_lcr_count()
+				except Exception:
+					pass
+   
+	def refresh_lcr_count(self):
+		self.recording_lcr_counts = ABMI_Utils.countRecordings(self.user_id, base_folder="BMI Trainer Data/")
+
+	def handle_events(self):
+		for event in pygame.event.get():
+			if event.type == pygame.QUIT:
+				self.quit()
+			elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+				self.quit()
+			self.current_scene.handle_events(event)
+
+	def main_loop(self):
+		while self.running:
+			self.handle_events()
+			self.current_scene.update()
+			self.current_scene.draw(self.screen)
+			pygame.display.flip()
+			self.clock.tick(60)
+
+	def quit(self):
+		pygame.quit()
+		sys.exit()
