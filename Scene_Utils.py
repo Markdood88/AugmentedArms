@@ -303,7 +303,9 @@ class ImpedanceCheckSingleScene(Scene):
 		self.dev_sim_duration = 1.0  # seconds
 
 	def handle_events(self, event):
-		pass  # no interaction during checking
+		if event.type == pygame.KEYDOWN and event.key == pygame.K_x:
+			print("Skipping all cables and moving to trainer.")
+			self.app.switch_scene("trainer")
 
 	def reset(self):
 		self.status = "waiting"
