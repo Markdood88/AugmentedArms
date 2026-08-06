@@ -10,6 +10,40 @@ from dynamixel_sdk import *
 def match_lists(expected, actual):
 	return [1 if val in actual else 0 for val in expected]
 
+def load_gesture_positions():
+	gestures = {}
+	current_gesture = None
+	try:
+		with open(GESTURE_POSITIONS_FILE, 'r') as f:
+			for line in f:
+				line = line.strip()
+				if not line:
+					continue
+				if line.lower().startswith("gesture:"):
+					current_gesture = line.split(":", 1)[1].strip().lower()
+					gestures[current_gesture] = {}
+				elif ":" in line and current_gesture is not None:
+					motor_str, value_str = line.split(":", 1)
+					value_str = value_str.strip().lower()
+					gestures[current_gesture][int(motor_str.strip())] = None if value_str == "release" else int(value_str)
+	except (OSError, ValueError) as e:
+		print(f"Failed to load gesture positions: {e}")
+	return gestures
+
+def apply_gesture(gesture_name):
+	def worker():
+		if not RightArm:
+			return
+		positions = load_gesture_positions().get(gesture_name)
+		if not positions:
+			return
+		for motor_id, value in positions.items():
+			if value is None:
+				RightArm.enable_single_motor_torque(motor_id, False)
+			else:
+				RightArm.set_motor_position(motor_id, RightArm.default_speed, value)
+	threading.Thread(target=worker, daemon=True).start()
+
 def detect_arm_ports():
 
 	global expected_ports
@@ -560,6 +594,11 @@ joystick = None
 joystick_connected = False
 AXIS_THRESHOLD = 0.8  #DPad minimum change
 
+# Gesture Vars (Recording Stage stick-driven gestures)
+GESTURE_POSITIONS_FILE = "/home/b2j/Desktop/AugmentedArms/Arm_Gesture_Positions.txt"
+gesture_axis_x_active = False
+gesture_axis_y_active = False
+
 # Colors
 white = (217,217,217)
 blue = (23,100,255)
@@ -860,6 +899,30 @@ while True:
 					playback_button_states[1] = False
 				elif event.button == 7: #Button A
 					playback_button_states[2] = False
+
+			elif event.type == pygame.JOYAXISMOTION:
+				if event.axis == 0:  # Left/Right - Fist / Peace
+					if event.value < -AXIS_THRESHOLD:
+						if not gesture_axis_x_active:
+							gesture_axis_x_active = True
+							apply_gesture("fist")
+					elif event.value > AXIS_THRESHOLD:
+						if not gesture_axis_x_active:
+							gesture_axis_x_active = True
+							apply_gesture("peace")
+					else:
+						gesture_axis_x_active = False
+				elif event.axis == 1:  # Up/Down - Point / Open Hand
+					if event.value < -AXIS_THRESHOLD:
+						if not gesture_axis_y_active:
+							gesture_axis_y_active = True
+							apply_gesture("point")
+					elif event.value > AXIS_THRESHOLD:
+						if not gesture_axis_y_active:
+							gesture_axis_y_active = True
+							apply_gesture("openhand")
+					else:
+						gesture_axis_y_active = False
 
 		elif current_scene == SCENE_LIVE_MODE:
 
