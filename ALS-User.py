@@ -553,6 +553,7 @@ left_arm_motors_alive = [0,0,0,0,0,0,0,0] #8 Values
 # Arm Status Vars
 lock_button_held = False
 release_button_held = False
+arms_disabled = False  # Safety lock toggled via Option 4 in the piezo sequence
 
 # Joystick Setup
 joystick = None
@@ -944,15 +945,15 @@ while True:
 	# --- ALS User Polled Inputs ---
 	if finger_sensor.was_pressed():
 		if current_scene == SCENE_LIVE_MODE:
-			
+
 			if speaker.playing:
 				speaker.play_overlap("/home/b2j/Desktop/AugmentedArms/Sounds/Click.mp3", volume=1.0)
 				speaker.trigger_record_index()
 				speaker.stop()
 
 				if(speaker.trigger_index): #Valid Audio Trigger
-					if speaker.trigger_index == 1: # Trigger Playback 1
-						
+					if speaker.trigger_index == 1 and not arms_disabled: # Trigger Playback 1
+
 						#Highlight Appropriate button for current playback
 						playback_button_states[0] = True
 						playback_button_states[1] = False
@@ -964,8 +965,8 @@ while True:
 								kwargs={'csv_filename': f"Motion1{'R' if arm == RightArm else 'L'}.csv"},
 								daemon=True
 							).start()
-					elif speaker.trigger_index == 2: # Trigger Playback 2
-						
+					elif speaker.trigger_index == 2 and not arms_disabled: # Trigger Playback 2
+
 						#Highlight Appropriate button for current playback
 						playback_button_states[0] = False
 						playback_button_states[1] = True
@@ -977,8 +978,8 @@ while True:
 								kwargs={'csv_filename': f"Motion2{'R' if arm == RightArm else 'L'}.csv"},
 								daemon=True
 							).start()
-					elif speaker.trigger_index == 3: # Trigger Playback 3
-						
+					elif speaker.trigger_index == 3 and not arms_disabled: # Trigger Playback 3
+
 						#Highlight Appropriate button for current playback
 						playback_button_states[0] = False
 						playback_button_states[1] = False
@@ -990,14 +991,30 @@ while True:
 								kwargs={'csv_filename': f"Motion3{'R' if arm == RightArm else 'L'}.csv"},
 								daemon=True
 							).start()
-					
+					elif speaker.trigger_index == 4: # Trigger Safety Lock Toggle
+						arms_disabled = not arms_disabled
+						if arms_disabled:
+							speaker.play_overlap("/home/b2j/Desktop/AugmentedArms/Sounds/confirm-disabled.wav", volume=1.0)
+						else:
+							speaker.play_overlap("/home/b2j/Desktop/AugmentedArms/Sounds/confirm-enabled.wav", volume=1.0)
+
 			else:
-				sequence = [
-					"/home/b2j/Desktop/AugmentedArms/Sounds/Click.mp3",
-					"/home/b2j/Desktop/AugmentedArms/Sounds/Option1-highlong.wav",
-					"/home/b2j/Desktop/AugmentedArms/Sounds/Option2-highlong.wav",
-					"/home/b2j/Desktop/AugmentedArms/Sounds/Option3-highlong.wav"
-				]
+				if arms_disabled:
+					sequence = [
+						"/home/b2j/Desktop/AugmentedArms/Sounds/Click.mp3",
+						"/home/b2j/Desktop/AugmentedArms/Sounds/Silent.wav",
+						"/home/b2j/Desktop/AugmentedArms/Sounds/Silent.wav",
+						"/home/b2j/Desktop/AugmentedArms/Sounds/Silent.wav",
+						"/home/b2j/Desktop/AugmentedArms/Sounds/Option4-EnableArms.wav"
+					]
+				else:
+					sequence = [
+						"/home/b2j/Desktop/AugmentedArms/Sounds/Click.mp3",
+						"/home/b2j/Desktop/AugmentedArms/Sounds/Option1-highlong.wav",
+						"/home/b2j/Desktop/AugmentedArms/Sounds/Option2-highlong.wav",
+						"/home/b2j/Desktop/AugmentedArms/Sounds/Option3-highlong.wav",
+						"/home/b2j/Desktop/AugmentedArms/Sounds/Option4-DisableArms.wav"
+					]
 				speaker.play_sequence(sequence, volume=volume)
 
 	# --- Scene drawing ---
