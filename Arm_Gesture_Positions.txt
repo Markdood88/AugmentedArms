@@ -1,6 +1,6 @@
 gesture: peace
 8: 2000
-9: 1000
+9: 1300
 
 gesture: point
 8: 1000
