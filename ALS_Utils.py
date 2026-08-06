@@ -10,28 +10,28 @@ GPIO.setwarnings(False)
 class PiezoSensor:
 	def __init__(self, pin, cooldown=0.2):
 		self.pin = pin
-		GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-		self.prev_state = GPIO.LOW
-		self.last_press_time = 0
-		self.cooldown = cooldown  # in seconds
+		self._tap_flag = False
+		self._flag_lock = threading.Lock()
+		GPIO.setup(self.pin, GPIO.IN)
+		# Sensor idles LOW and pulses HIGH on a tap; GPIO's own bouncetime
+		# debounce handles the ringing, same as the known-working standalone test.
+		GPIO.add_event_detect(self.pin, GPIO.RISING, callback=self._handle_tap, bouncetime=int(cooldown * 1000))
+
+	def _handle_tap(self, channel):
+		with self._flag_lock:
+			self._tap_flag = True
 
 	def is_pressed(self):
 		"""Returns True if currently pressed"""
-		return GPIO.input(self.pin) == GPIO.LOW
+		return GPIO.input(self.pin) == GPIO.HIGH
 
 	def was_pressed(self):
-		"""Returns True only once when state changes from LOW to HIGH and cooldown passed"""
-		current = GPIO.input(self.pin)
-		now = time.time()
-		pressed = (
-			current == GPIO.LOW and
-			self.prev_state == GPIO.HIGH and
-			(now - self.last_press_time) >= self.cooldown
-		)
-		self.prev_state = current
-		if pressed:
-			self.last_press_time = now
-		return pressed
+		"""Returns True once per detected tap (edge-triggered, hardware debounced)"""
+		with self._flag_lock:
+			if self._tap_flag:
+				self._tap_flag = False
+				return True
+			return False
 
 class Speaker:
 	def __init__(self, volume=1.0):
