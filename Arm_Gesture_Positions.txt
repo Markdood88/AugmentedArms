@@ -1,0 +1,15 @@
+gesture: peace
+8: 2000
+9: 1000
+
+gesture: point
+8: 1000
+9: 2300
+
+gesture: fist
+8: 700
+9: 3100
+
+gesture: openhand
+8: release
+9: release
