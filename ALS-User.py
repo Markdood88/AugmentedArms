@@ -67,6 +67,17 @@ def load_gesture_positions():
 		print(f"Failed to load gesture positions: {e}")
 	return gestures
 
+def play_animation(motion_number):
+	def worker():
+		arms = [a for a in (RightArm, LeftArm) if a]
+		for arm in arms:
+			filename = f"Motion{motion_number}{'R' if arm == RightArm else 'L'}.csv"
+			arm.play_positions(csv_filename=filename)
+		for arm in arms:
+			arm.task_done_event.wait()
+		send_m5("ANIM_END")
+	threading.Thread(target=worker, daemon=True).start()
+
 def apply_gesture(gesture_name):
 	def worker():
 		if not RightArm:
@@ -921,30 +932,15 @@ while True:
 							threading.Thread(target=arm.end_record, daemon=True).start()
 				elif event.button == 0:  #Button A - Playback 1
 					playback_button_states[0] = True
-					for arm in [a for a in (RightArm, LeftArm) if a]:
-						threading.Thread(
-							target=arm.play_positions,
-							kwargs={'csv_filename': f"Motion1{'R' if arm == RightArm else 'L'}.csv"},
-							daemon=True
-						).start()
+					play_animation(1)
 					send_m5("A")
 				elif event.button == 1:  #Button B - Playback 2
 					playback_button_states[1] = True
-					for arm in [a for a in (RightArm, LeftArm) if a]:
-						threading.Thread(
-							target=arm.play_positions,
-							kwargs={'csv_filename': f"Motion2{'R' if arm == RightArm else 'L'}.csv"},
-							daemon=True
-						).start()
+					play_animation(2)
 					send_m5("B")
 				elif event.button == 7:  #Button C - Playback 3
 					playback_button_states[2] = True
-					for arm in [a for a in (RightArm, LeftArm) if a]:
-						threading.Thread(
-							target=arm.play_positions,
-							kwargs={'csv_filename': f"Motion3{'R' if arm == RightArm else 'L'}.csv"},
-							daemon=True
-						).start()
+					play_animation(3)
 					send_m5("C")
 
 			elif event.type == pygame.JOYBUTTONUP:
@@ -1029,30 +1025,15 @@ while True:
 					current_scene = SCENE_RECORDING_STAGE
 				elif event.button == 0:  #Button A - Playback 1
 					playback_button_states[0] = True
-					for arm in [a for a in (RightArm, LeftArm) if a]:
-						threading.Thread(
-							target=arm.play_positions,
-							kwargs={'csv_filename': f"Motion1{'R' if arm == RightArm else 'L'}.csv"},
-							daemon=True
-						).start()
+					play_animation(1)
 					send_m5("A")
 				elif event.button == 1:  #Button B - Playback 2
 					playback_button_states[1] = True
-					for arm in [a for a in (RightArm, LeftArm) if a]:
-						threading.Thread(
-							target=arm.play_positions,
-							kwargs={'csv_filename': f"Motion2{'R' if arm == RightArm else 'L'}.csv"},
-							daemon=True
-						).start()
+					play_animation(2)
 					send_m5("B")
 				elif event.button == 7:  #Button C - Playback 3
 					playback_button_states[2] = True
-					for arm in [a for a in (RightArm, LeftArm) if a]:
-						threading.Thread(
-							target=arm.play_positions,
-							kwargs={'csv_filename': f"Motion3{'R' if arm == RightArm else 'L'}.csv"},
-							daemon=True
-						).start()
+					play_animation(3)
 					send_m5("C")
 
 			elif event.type == pygame.JOYBUTTONUP:
@@ -1083,12 +1064,7 @@ while True:
 						playback_button_states[1] = False
 						playback_button_states[2] = False
 
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(
-								target=arm.play_positions,
-								kwargs={'csv_filename': f"Motion1{'R' if arm == RightArm else 'L'}.csv"},
-								daemon=True
-							).start()
+						play_animation(1)
 						send_m5("A")
 					elif speaker.trigger_index == 2 and not arms_disabled: # Trigger Playback 2
 
@@ -1097,12 +1073,7 @@ while True:
 						playback_button_states[1] = True
 						playback_button_states[2] = False
 
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(
-								target=arm.play_positions,
-								kwargs={'csv_filename': f"Motion2{'R' if arm == RightArm else 'L'}.csv"},
-								daemon=True
-							).start()
+						play_animation(2)
 						send_m5("B")
 					elif speaker.trigger_index == 3 and not arms_disabled: # Trigger Playback 3
 
@@ -1111,12 +1082,7 @@ while True:
 						playback_button_states[1] = False
 						playback_button_states[2] = True
 
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(
-								target=arm.play_positions,
-								kwargs={'csv_filename': f"Motion3{'R' if arm == RightArm else 'L'}.csv"},
-								daemon=True
-							).start()
+						play_animation(3)
 						send_m5("C")
 					elif speaker.trigger_index == 4: # Trigger Safety Lock Toggle
 						arms_disabled = not arms_disabled
