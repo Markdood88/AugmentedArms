@@ -70,6 +70,22 @@ def load_gesture_positions():
 def animation_active():
 	return any(arm.task_running for arm in (RightArm, LeftArm) if arm)
 
+def toggle_recording(slot_index, label):
+	recording_states[slot_index] = not recording_states[slot_index]
+	if recording_states[slot_index]:
+		for arm in [a for a in (RightArm, LeftArm) if a]:
+			filename = f"Motion{slot_index + 1}{'R' if arm is RightArm else 'L'}.csv"
+			threading.Thread(
+				target=arm.start_record,
+				kwargs={'filename': filename},
+				daemon=True
+			).start()
+		send_m5(f"RECORDING_{label}")
+	else:
+		for arm in [a for a in (RightArm, LeftArm) if a]:
+			threading.Thread(target=arm.end_record, daemon=True).start()
+		send_m5("RECORDING_END")
+
 def play_animation(motion_number):
 	def worker():
 		arms = [a for a in (RightArm, LeftArm) if a]
@@ -863,44 +879,11 @@ while True:
 				elif event.key == pygame.K_RIGHT:
 					current_scene = SCENE_LIVE_MODE
 				elif event.key == pygame.K_1:
-					recording_states[0] = not recording_states[0]
-					if recording_states[0] == True:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							filename = f"Motion1{'R' if arm is RightArm else 'L'}.csv"
-							threading.Thread(
-								target=arm.start_record,
-								kwargs={'filename': filename},
-								daemon=True
-							).start()
-					elif recording_states[0] == False:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(target=arm.end_record, daemon=True).start()
+					toggle_recording(0, "A")
 				elif event.key == pygame.K_2:
-					recording_states[1] = not recording_states[1]
-					if recording_states[1] == True:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							filename = f"Motion2{'R' if arm is RightArm else 'L'}.csv"
-							threading.Thread(
-								target=arm.start_record,
-								kwargs={'filename': filename},
-								daemon=True
-							).start()
-					elif recording_states[1] == False:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(target=arm.end_record, daemon=True).start()
+					toggle_recording(1, "B")
 				elif event.key == pygame.K_3:
-					recording_states[2] = not recording_states[2]
-					if recording_states[2] == True:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							filename = f"Motion3{'R' if arm is RightArm else 'L'}.csv"
-							threading.Thread(
-								target=arm.start_record,
-								kwargs={'filename': filename},
-								daemon=True
-							).start()
-					elif recording_states[2] == False:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(target=arm.end_record, daemon=True).start()
+					toggle_recording(2, "C")
 
 			elif event.type == pygame.JOYBUTTONDOWN:
 				if event.button == 10:  # BACK BUTTON
@@ -908,44 +891,11 @@ while True:
 				elif event.button == 12: # FORWARD BUTTON
 					current_scene = SCENE_LIVE_MODE
 				elif event.button == 3:  # X
-					recording_states[0] = not recording_states[0]
-					if recording_states[0] == True:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							filename = f"Motion1{'R' if arm is RightArm else 'L'}.csv"
-							threading.Thread(
-								target=arm.start_record,
-								kwargs={'filename': filename},
-								daemon=True
-							).start()
-					elif recording_states[0] == False:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(target=arm.end_record, daemon=True).start()
+					toggle_recording(0, "A")
 				elif event.button == 4:  # Y
-					recording_states[1] = not recording_states[1]
-					if recording_states[1] == True:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							filename = f"Motion2{'R' if arm is RightArm else 'L'}.csv"
-							threading.Thread(
-								target=arm.start_record,
-								kwargs={'filename': filename},
-								daemon=True
-							).start()
-					elif recording_states[1] == False:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(target=arm.end_record, daemon=True).start()
+					toggle_recording(1, "B")
 				elif event.button == 6:  # Z
-					recording_states[2] = not recording_states[2]
-					if recording_states[2] == True:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							filename = f"Motion3{'R' if arm is RightArm else 'L'}.csv"
-							threading.Thread(
-								target=arm.start_record,
-								kwargs={'filename': filename},
-								daemon=True
-							).start()
-					elif recording_states[2] == False:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(target=arm.end_record, daemon=True).start()
+					toggle_recording(2, "C")
 				elif event.button == 0 and not animation_active():  #Button A - Playback 1
 					playback_button_states[0] = True
 					play_animation(1)
@@ -997,44 +947,11 @@ while True:
 				if event.key == pygame.K_LEFT:
 					current_scene = SCENE_RECORDING_STAGE
 				elif event.key == pygame.K_1:
-					recording_states[0] = not recording_states[0]
-					if recording_states[0] == True:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							filename = f"Motion1{'R' if arm is RightArm else 'L'}.csv"
-							threading.Thread(
-								target=arm.start_record,
-								kwargs={'filename': filename},
-								daemon=True
-							).start()
-					elif recording_states[0] == False:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(target=arm.end_record, daemon=True).start()
+					toggle_recording(0, "A")
 				elif event.key == pygame.K_2:
-					recording_states[1] = not recording_states[1]
-					if recording_states[1] == True:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							filename = f"Motion2{'R' if arm is RightArm else 'L'}.csv"
-							threading.Thread(
-								target=arm.start_record,
-								kwargs={'filename': filename},
-								daemon=True
-							).start()
-					elif recording_states[1] == False:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(target=arm.end_record, daemon=True).start()
+					toggle_recording(1, "B")
 				elif event.key == pygame.K_3:
-					recording_states[2] = not recording_states[2]
-					if recording_states[2] == True:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							filename = f"Motion3{'R' if arm is RightArm else 'L'}.csv"
-							threading.Thread(
-								target=arm.start_record,
-								kwargs={'filename': filename},
-								daemon=True
-							).start()
-					elif recording_states[2] == False:
-						for arm in [a for a in (RightArm, LeftArm) if a]:
-							threading.Thread(target=arm.end_record, daemon=True).start()
+					toggle_recording(2, "C")
 
 			elif event.type == pygame.JOYBUTTONDOWN:
 				if event.button == 10:  # BACK BUTTON
