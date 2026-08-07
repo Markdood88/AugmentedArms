@@ -3,9 +3,46 @@ import sys
 import random
 import math
 import threading
+import serial
 import Arm_Utils
 import ALS_Utils
 from dynamixel_sdk import *
+from serial.tools import list_ports
+
+def pick_m5_port():
+	ports = list(list_ports.comports())
+
+	for p in ports:
+		text = f"{p.description} {p.manufacturer} {p.product}".lower()
+
+		if "ftdi" in text:
+			continue
+
+		return p.device
+
+	return None
+
+def sendToM5(port: str, baud: int, message: str):
+	if not port:
+		print("[ERROR] No serial port selected")
+		return
+
+	if not message:
+		return
+
+	message = message.strip() + "\n"
+
+	try:
+		with serial.Serial(port, baud, timeout=1) as ser:
+			ser.write(message.encode("utf-8"))
+			ser.flush()
+			print(f"[TX M5] {message.strip()}")
+
+	except serial.SerialException as e:
+		print(f"[ERROR] Serial error: {e}")
+
+def send_m5(message: str):
+	threading.Thread(target=sendToM5, args=(m5_port, m5_baud, message), daemon=True).start()
 
 def match_lists(expected, actual):
 	return [1 if val in actual else 0 for val in expected]
@@ -599,6 +636,10 @@ GESTURE_POSITIONS_FILE = "/home/b2j/Desktop/AugmentedArms/Arm_Gesture_Positions.
 gesture_axis_x_active = False
 gesture_axis_y_active = False
 
+# M5 Serial Vars
+m5_baud = 115200
+scan_active = False  # True while a piezo-driven audio scan is in progress
+
 # Colors
 white = (217,217,217)
 blue = (23,100,255)
@@ -655,6 +696,13 @@ finger_sensor = ALS_Utils.PiezoSensor(pin = 21)
 speaker = ALS_Utils.Speaker(volume=1.0)
 volume = 1.0
 
+#M5 Stick Sender
+m5_port = pick_m5_port()
+if m5_port is None:
+	print("[ERROR] No M5 serial port found")
+else:
+	print(f"[OK] M5 port found: {m5_port}")
+
 # ---- MAIN LOOP ----
 while True:
 	for event in pygame.event.get():
@@ -681,22 +729,26 @@ while True:
 			if event.key == pygame.K_l: # L - LOCK BUTTON
 				lock_button_held = True
 				[threading.Thread(target=arm.emergency_stop, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+				send_m5("LOCK")
 			elif event.key == pygame.K_r: # R - RELEASE BUTTON
 				release_button_held = True
 				[threading.Thread(target=arm.release_arm, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+				send_m5("RELEASE")
 		elif event.type == pygame.KEYUP:
 				if event.key == pygame.K_l:
 					lock_button_held = False
 				elif event.key == pygame.K_r:
 					release_button_held = False
-		
+
 		if event.type == pygame.JOYBUTTONDOWN:
 			if event.button == 8:  # L - LOCK BUTTON
 				lock_button_held = True
 				[threading.Thread(target=arm.emergency_stop, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+				send_m5("LOCK")
 			elif event.button == 9:  # R - RELEASE BUTTON
 				release_button_held = True
 				[threading.Thread(target=arm.release_arm, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
+				send_m5("RELEASE")
 		elif event.type == pygame.JOYBUTTONUP:
 				if event.button == 8:
 					lock_button_held = False
@@ -875,6 +927,7 @@ while True:
 							kwargs={'csv_filename': f"Motion1{'R' if arm == RightArm else 'L'}.csv"},
 							daemon=True
 						).start()
+					send_m5("A")
 				elif event.button == 1:  #Button B - Playback 2
 					playback_button_states[1] = True
 					for arm in [a for a in (RightArm, LeftArm) if a]:
@@ -883,6 +936,7 @@ while True:
 							kwargs={'csv_filename': f"Motion2{'R' if arm == RightArm else 'L'}.csv"},
 							daemon=True
 						).start()
+					send_m5("B")
 				elif event.button == 7:  #Button C - Playback 3
 					playback_button_states[2] = True
 					for arm in [a for a in (RightArm, LeftArm) if a]:
@@ -891,6 +945,7 @@ while True:
 							kwargs={'csv_filename': f"Motion3{'R' if arm == RightArm else 'L'}.csv"},
 							daemon=True
 						).start()
+					send_m5("C")
 
 			elif event.type == pygame.JOYBUTTONUP:
 				if event.button == 0: #Button A
@@ -980,6 +1035,7 @@ while True:
 							kwargs={'csv_filename': f"Motion1{'R' if arm == RightArm else 'L'}.csv"},
 							daemon=True
 						).start()
+					send_m5("A")
 				elif event.button == 1:  #Button B - Playback 2
 					playback_button_states[1] = True
 					for arm in [a for a in (RightArm, LeftArm) if a]:
@@ -988,6 +1044,7 @@ while True:
 							kwargs={'csv_filename': f"Motion2{'R' if arm == RightArm else 'L'}.csv"},
 							daemon=True
 						).start()
+					send_m5("B")
 				elif event.button == 7:  #Button C - Playback 3
 					playback_button_states[2] = True
 					for arm in [a for a in (RightArm, LeftArm) if a]:
@@ -996,6 +1053,7 @@ while True:
 							kwargs={'csv_filename': f"Motion3{'R' if arm == RightArm else 'L'}.csv"},
 							daemon=True
 						).start()
+					send_m5("C")
 
 			elif event.type == pygame.JOYBUTTONUP:
 				if event.button == 0: #Button A
@@ -1013,9 +1071,12 @@ while True:
 				speaker.play_overlap("/home/b2j/Desktop/AugmentedArms/Sounds/Click.mp3", volume=1.0)
 				speaker.trigger_record_index()
 				speaker.stop()
+				scan_active = False  # Scan ended via selection, not timeout
 
-				if(speaker.trigger_index): #Valid Audio Trigger
-					if speaker.trigger_index == 1 and not arms_disabled: # Trigger Playback 1
+				if speaker.trigger_index is not None: #Valid Audio Trigger
+					if speaker.trigger_index == 0: # Tap during Click, before the first option appears
+						send_m5("SCAN_END")
+					elif speaker.trigger_index == 1 and not arms_disabled: # Trigger Playback 1
 
 						#Highlight Appropriate button for current playback
 						playback_button_states[0] = True
@@ -1028,6 +1089,7 @@ while True:
 								kwargs={'csv_filename': f"Motion1{'R' if arm == RightArm else 'L'}.csv"},
 								daemon=True
 							).start()
+						send_m5("A")
 					elif speaker.trigger_index == 2 and not arms_disabled: # Trigger Playback 2
 
 						#Highlight Appropriate button for current playback
@@ -1041,6 +1103,7 @@ while True:
 								kwargs={'csv_filename': f"Motion2{'R' if arm == RightArm else 'L'}.csv"},
 								daemon=True
 							).start()
+						send_m5("B")
 					elif speaker.trigger_index == 3 and not arms_disabled: # Trigger Playback 3
 
 						#Highlight Appropriate button for current playback
@@ -1054,12 +1117,17 @@ while True:
 								kwargs={'csv_filename': f"Motion3{'R' if arm == RightArm else 'L'}.csv"},
 								daemon=True
 							).start()
+						send_m5("C")
 					elif speaker.trigger_index == 4: # Trigger Safety Lock Toggle
 						arms_disabled = not arms_disabled
 						if arms_disabled:
 							speaker.play_overlap("/home/b2j/Desktop/AugmentedArms/Sounds/confirm-disabled.wav", volume=1.0)
+							send_m5("DISABLED")
 						else:
 							speaker.play_overlap("/home/b2j/Desktop/AugmentedArms/Sounds/confirm-enabled.wav", volume=1.0)
+							send_m5("ENABLED")
+					elif arms_disabled and speaker.trigger_index in (1, 2, 3): # Early tap during disabled-mode scan
+						send_m5("SCAN_END")
 
 			else:
 				if arms_disabled:
@@ -1079,6 +1147,13 @@ while True:
 						"/home/b2j/Desktop/AugmentedArms/Sounds/Option4-DisableArms.wav"
 					]
 				speaker.play_sequence(sequence, volume=volume)
+				scan_active = True
+				send_m5("SCAN_START")
+
+	# Scan ended on its own (timeout), not via a tap-selection above
+	if scan_active and not speaker.playing:
+		scan_active = False
+		send_m5("SCAN_END")
 
 	# --- Scene drawing ---
 	if current_scene == SCENE_LANGUAGE_SELECT:
