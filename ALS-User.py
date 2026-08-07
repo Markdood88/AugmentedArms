@@ -67,6 +67,9 @@ def load_gesture_positions():
 		print(f"Failed to load gesture positions: {e}")
 	return gestures
 
+def animation_active():
+	return any(arm.task_running for arm in (RightArm, LeftArm) if arm)
+
 def play_animation(motion_number):
 	def worker():
 		arms = [a for a in (RightArm, LeftArm) if a]
@@ -75,7 +78,15 @@ def play_animation(motion_number):
 			arm.play_positions(csv_filename=filename)
 		for arm in arms:
 			arm.task_done_event.wait()
-		send_m5("ANIM_END")
+		global animation_lock_interrupt
+		if animation_lock_interrupt:
+			animation_lock_interrupt = False
+			return
+		# Finished naturally (not cut off by Lock) - release torque so the arms don't stay locked
+		for arm in arms:
+			arm.release_arm()
+		if not scan_active:
+			send_m5("ANIM_END")
 	threading.Thread(target=worker, daemon=True).start()
 
 def apply_gesture(gesture_name):
@@ -650,6 +661,7 @@ gesture_axis_y_active = False
 # M5 Serial Vars
 m5_baud = 115200
 scan_active = False  # True while a piezo-driven audio scan is in progress
+animation_lock_interrupt = False  # True when Lock cut off an in-progress animation
 
 # Colors
 white = (217,217,217)
@@ -739,9 +751,11 @@ while True:
 		if event.type == pygame.KEYDOWN:
 			if event.key == pygame.K_l: # L - LOCK BUTTON
 				lock_button_held = True
+				if animation_active():
+					animation_lock_interrupt = True
 				[threading.Thread(target=arm.emergency_stop, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
 				send_m5("LOCK")
-			elif event.key == pygame.K_r: # R - RELEASE BUTTON
+			elif event.key == pygame.K_r and not animation_active(): # R - RELEASE BUTTON (never mid-animation; Lock it first)
 				release_button_held = True
 				[threading.Thread(target=arm.release_arm, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
 				send_m5("RELEASE")
@@ -754,9 +768,11 @@ while True:
 		if event.type == pygame.JOYBUTTONDOWN:
 			if event.button == 8:  # L - LOCK BUTTON
 				lock_button_held = True
+				if animation_active():
+					animation_lock_interrupt = True
 				[threading.Thread(target=arm.emergency_stop, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
 				send_m5("LOCK")
-			elif event.button == 9:  # R - RELEASE BUTTON
+			elif event.button == 9 and not animation_active():  # R - RELEASE BUTTON (never mid-animation; Lock it first)
 				release_button_held = True
 				[threading.Thread(target=arm.release_arm, daemon=True).start() for arm in (RightArm, LeftArm) if arm]
 				send_m5("RELEASE")
@@ -930,15 +946,15 @@ while True:
 					elif recording_states[2] == False:
 						for arm in [a for a in (RightArm, LeftArm) if a]:
 							threading.Thread(target=arm.end_record, daemon=True).start()
-				elif event.button == 0:  #Button A - Playback 1
+				elif event.button == 0 and not animation_active():  #Button A - Playback 1
 					playback_button_states[0] = True
 					play_animation(1)
 					send_m5("A")
-				elif event.button == 1:  #Button B - Playback 2
+				elif event.button == 1 and not animation_active():  #Button B - Playback 2
 					playback_button_states[1] = True
 					play_animation(2)
 					send_m5("B")
-				elif event.button == 7:  #Button C - Playback 3
+				elif event.button == 7 and not animation_active():  #Button C - Playback 3
 					playback_button_states[2] = True
 					play_animation(3)
 					send_m5("C")
@@ -1023,15 +1039,15 @@ while True:
 			elif event.type == pygame.JOYBUTTONDOWN:
 				if event.button == 10:  # BACK BUTTON
 					current_scene = SCENE_RECORDING_STAGE
-				elif event.button == 0:  #Button A - Playback 1
+				elif event.button == 0 and not animation_active():  #Button A - Playback 1
 					playback_button_states[0] = True
 					play_animation(1)
 					send_m5("A")
-				elif event.button == 1:  #Button B - Playback 2
+				elif event.button == 1 and not animation_active():  #Button B - Playback 2
 					playback_button_states[1] = True
 					play_animation(2)
 					send_m5("B")
-				elif event.button == 7:  #Button C - Playback 3
+				elif event.button == 7 and not animation_active():  #Button C - Playback 3
 					playback_button_states[2] = True
 					play_animation(3)
 					send_m5("C")
@@ -1057,7 +1073,7 @@ while True:
 				if speaker.trigger_index is not None: #Valid Audio Trigger
 					if speaker.trigger_index == 0: # Tap during Click, before the first option appears
 						send_m5("SCAN_END")
-					elif speaker.trigger_index == 1 and not arms_disabled: # Trigger Playback 1
+					elif speaker.trigger_index == 1 and not arms_disabled and not animation_active(): # Trigger Playback 1
 
 						#Highlight Appropriate button for current playback
 						playback_button_states[0] = True
@@ -1066,7 +1082,7 @@ while True:
 
 						play_animation(1)
 						send_m5("A")
-					elif speaker.trigger_index == 2 and not arms_disabled: # Trigger Playback 2
+					elif speaker.trigger_index == 2 and not arms_disabled and not animation_active(): # Trigger Playback 2
 
 						#Highlight Appropriate button for current playback
 						playback_button_states[0] = False
@@ -1075,7 +1091,7 @@ while True:
 
 						play_animation(2)
 						send_m5("B")
-					elif speaker.trigger_index == 3 and not arms_disabled: # Trigger Playback 3
+					elif speaker.trigger_index == 3 and not arms_disabled and not animation_active(): # Trigger Playback 3
 
 						#Highlight Appropriate button for current playback
 						playback_button_states[0] = False
