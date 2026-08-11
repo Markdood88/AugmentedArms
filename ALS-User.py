@@ -70,11 +70,14 @@ def load_gesture_positions():
 def animation_active():
 	return any(arm.task_running for arm in (RightArm, LeftArm) if arm)
 
+def group_folder():
+	return f"group_{recordingGroup:02d}"
+
 def toggle_recording(slot_index, label):
 	recording_states[slot_index] = not recording_states[slot_index]
 	if recording_states[slot_index]:
 		for arm in [a for a in (RightArm, LeftArm) if a]:
-			filename = f"Motion{slot_index + 1}{'R' if arm is RightArm else 'L'}.csv"
+			filename = f"{group_folder()}/Motion{slot_index + 1}{'R' if arm is RightArm else 'L'}.csv"
 			threading.Thread(
 				target=arm.start_record,
 				kwargs={'filename': filename},
@@ -90,7 +93,7 @@ def play_animation(motion_number):
 	def worker():
 		arms = [a for a in (RightArm, LeftArm) if a]
 		for arm in arms:
-			filename = f"Motion{motion_number}{'R' if arm == RightArm else 'L'}.csv"
+			filename = f"{group_folder()}/Motion{motion_number}{'R' if arm == RightArm else 'L'}.csv"
 			arm.play_positions(csv_filename=filename)
 		for arm in arms:
 			arm.task_done_event.wait()
@@ -448,12 +451,16 @@ def draw_recording_stage():
 	# Text by language
 	if language == "en":
 		title_text = "Record Today's Animations"
+		title_y = 40
+		group_text = f"Group: {recordingGroup}"
 		press_texts = ["Press X to", "Press Y to", "Press Z to"]
 		status_texts = ["STOP" if toggle else "START" for toggle in recording_states]
 		playback_labels = ["Playback 1", "Playback 2", "Playback 3"]
 		hint_text = "♥: NEXT          –: BACK"
 	else:
 		title_text = "今日のアニメーションを記録"
+		title_y = 48
+		group_text = f"グループ: {recordingGroup}"
 		press_texts = ["X を押すと", "Y を押すと", "Z を押すと"]
 		status_texts = ["停止" if toggle else "開始" for toggle in recording_states]
 		playback_labels = ["再生 1", "再生 2", "再生 3"]
@@ -461,8 +468,14 @@ def draw_recording_stage():
 
 	# Top Title
 	title_surf = title_font.render(title_text, True, white)
-	title_rect = title_surf.get_rect(center=(render_surface.get_width() // 2, 40))
+	title_rect = title_surf.get_rect(center=(render_surface.get_width() // 2, title_y))
 	render_surface.blit(title_surf, title_rect)
+
+	# Recording Group (top right)
+	group_font = pygame.font.Font(font_path, 14)
+	group_surf = group_font.render(group_text, True, white)
+	group_rect = group_surf.get_rect(topright=(render_surface.get_width() - 10, 8))
+	render_surface.blit(group_surf, group_rect)
 
 	# Setup for columns
 	center_x = render_surface.get_width() // 2
@@ -537,6 +550,13 @@ def draw_live_mode():
 
 	render_surface.blit(live_surf, live_rect)
 	render_surface.blit(mode_surf, mode_rect)
+
+	# Recording Group (top right)
+	group_font = pygame.font.Font(font_path, 14)
+	group_text = f"Group: {recordingGroup}" if language == "en" else f"グループ: {recordingGroup}"
+	group_surf = group_font.render(group_text, True, white)
+	group_rect = group_surf.get_rect(topright=(render_surface.get_width() - 10, 8))
+	render_surface.blit(group_surf, group_rect)
 
 	# Text by language
 	if language == "en":
@@ -668,6 +688,13 @@ arms_disabled = False  # Safety lock toggled via Option 4 in the piezo sequence
 joystick = None
 joystick_connected = False
 AXIS_THRESHOLD = 0.8  #DPad minimum change
+TAP_MAX_MS = 500  # Max hold duration for Back/Forward buttons to still count as a scene-nav tap
+
+# Back/Forward hold-tracking (Recording Stage & Live Mode: tap navigates, hold modifies Group)
+button10_held = False
+button12_held = False
+button10_press_time = 0
+button12_press_time = 0
 
 # Gesture Vars (Recording Stage stick-driven gestures)
 GESTURE_POSITIONS_FILE = "/home/b2j/Desktop/AugmentedArms/Arm_Gesture_Positions.txt"
@@ -699,6 +726,7 @@ dark_yellow = (201,185,0)
 #Recording States
 recording_states = [False, False, False]
 playback_button_states = [False, False, False]
+recordingGroup = 1
 
 #----Start of Code
 
@@ -886,10 +914,19 @@ while True:
 					toggle_recording(2, "C")
 
 			elif event.type == pygame.JOYBUTTONDOWN:
-				if event.button == 10:  # BACK BUTTON
-					current_scene = SCENE_LOCK_RELEASE
-				elif event.button == 12: # FORWARD BUTTON
-					current_scene = SCENE_LIVE_MODE
+				if event.button == 10:  # BACK BUTTON (nav on quick tap, held for Group decrease)
+					button10_held = True
+					button10_press_time = pygame.time.get_ticks()
+				elif event.button == 12: # FORWARD BUTTON (nav on quick tap, held for Group increase)
+					button12_held = True
+					button12_press_time = pygame.time.get_ticks()
+				elif event.button == 11:  # GROUP ADJUST (only while Back/Forward held)
+					if button12_held and recordingGroup < 99:
+						recordingGroup += 1
+						send_m5(f"Group: {recordingGroup}")
+					elif button10_held and recordingGroup > 1:
+						recordingGroup -= 1
+						send_m5(f"Group: {recordingGroup}")
 				elif event.button == 3:  # X
 					toggle_recording(0, "A")
 				elif event.button == 4:  # Y
@@ -916,6 +953,14 @@ while True:
 					playback_button_states[1] = False
 				elif event.button == 7: #Button A
 					playback_button_states[2] = False
+				elif event.button == 10:  # BACK BUTTON
+					button10_held = False
+					if pygame.time.get_ticks() - button10_press_time <= TAP_MAX_MS:
+						current_scene = SCENE_LOCK_RELEASE
+				elif event.button == 12:  # FORWARD BUTTON
+					button12_held = False
+					if pygame.time.get_ticks() - button12_press_time <= TAP_MAX_MS:
+						current_scene = SCENE_LIVE_MODE
 
 			elif event.type == pygame.JOYAXISMOTION:
 				if event.axis == 0:  # Left/Right - Fist / Peace
@@ -954,8 +999,19 @@ while True:
 					toggle_recording(2, "C")
 
 			elif event.type == pygame.JOYBUTTONDOWN:
-				if event.button == 10:  # BACK BUTTON
-					current_scene = SCENE_RECORDING_STAGE
+				if event.button == 10:  # BACK BUTTON (nav on quick tap, held for Group decrease)
+					button10_held = True
+					button10_press_time = pygame.time.get_ticks()
+				elif event.button == 12:  # No forward scene from Live Mode; held only feeds Group increase
+					button12_held = True
+					button12_press_time = pygame.time.get_ticks()
+				elif event.button == 11:  # GROUP ADJUST (only while Back/Forward held)
+					if button12_held and recordingGroup < 99:
+						recordingGroup += 1
+						send_m5(f"Group: {recordingGroup}")
+					elif button10_held and recordingGroup > 1:
+						recordingGroup -= 1
+						send_m5(f"Group: {recordingGroup}")
 				elif event.button == 0 and not animation_active():  #Button A - Playback 1
 					playback_button_states[0] = True
 					play_animation(1)
@@ -976,6 +1032,12 @@ while True:
 					playback_button_states[1] = False
 				elif event.button == 7: #Button A
 					playback_button_states[2] = False
+				elif event.button == 10:  # BACK BUTTON
+					button10_held = False
+					if pygame.time.get_ticks() - button10_press_time <= TAP_MAX_MS:
+						current_scene = SCENE_RECORDING_STAGE
+				elif event.button == 12:
+					button12_held = False
 
 	# --- ALS User Polled Inputs ---
 	if finger_sensor.was_pressed():
