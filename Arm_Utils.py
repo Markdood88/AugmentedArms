@@ -269,7 +269,7 @@ class RoboticArm:
 			if motor_id not in self.dxl_ids:
 				logging.warning(f"{self.device_name}: Motor ID {motor_id} not found.")
 				return
-			self.enable_motor_torque(motor_id, True)
+			self.enable_single_motor_torque(motor_id, True)
 
 			# Profile Acceleration & Velocity
 			self.packetHandler.write4ByteTxRx(
@@ -309,13 +309,11 @@ class RoboticArm:
 				return
 			interval = 1.0 / frequency
 			directory = os.path.join(os.getcwd(), "Recorded_movements")
-
-			# Save to ./Recorded_movements/
-			if not os.path.exists(directory):
-				os.makedirs(directory)
-				logging.debug(f"{self.device_name}: Created directory {directory}.")
-
 			filepath = os.path.join(directory, filename)
+
+			# Save to ./Recorded_movements/, creating any group subfolder as needed
+			os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
 			try:
 				self.file = open(filepath, mode='w', newline='')
 				self.writer = csv.writer(self.file)
@@ -404,10 +402,9 @@ class RoboticArm:
 	def play_positions_worker_thread(self, csv_filename, frequency):
 		try:
 			csv_filepath = os.path.join(os.path.join(os.getcwd(), "Recorded_movements", csv_filename))
-			print("Playing: " + csv_filename)
 			if not os.path.exists(csv_filepath):
-				logging.error(f"{self.device_name}: File not found.")
 				return
+			print("Playing: " + csv_filename)
 
 			# Enable Movement
 			self.set_is_stop(False)
