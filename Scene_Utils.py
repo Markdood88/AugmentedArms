@@ -336,15 +336,28 @@ class ImpedanceCheckSingleScene(Scene):
 			self.status = "done"
 			return
 
+		def _on_result(ch, z_kohm):
+			# Fires the instant this channel's value is computed -- before
+			# check_impedance() does its ~1-2s of post-measurement board
+			# cleanup (disabling lead-off, resuming the stream). That
+			# cleanup doesn't need to finish before we show the result, so
+			# flip to "done" here instead of waiting for the call below to
+			# return.
+			self.result = z_kohm
+			self.status = "done"
+
 		try:
 			# check_impedance expects a list of channels (1-based)
 			channel_num = self.cable_index + 1
-			impedance_result = self.app.bciboard.check_impedance([channel_num])
-			self.result = impedance_result[0][1] if impedance_result else float("nan")
+			self.app.bciboard.check_impedance([channel_num], on_result=_on_result)
+			if self.status != "done":
+				# Callback never fired (e.g. failed before a measurement
+				# was taken) -- fall back to the old behavior.
+				self.result = float("nan")
+				self.status = "done"
 		except Exception as e:
 			self.result = float("nan")
-
-		self.status = "done"
+			self.status = "done"
 
 	def update(self):
      
@@ -696,26 +709,34 @@ class UploadToCloudScene(Scene):
 	def on_enter(self):
 		self.status_message = ""
 		self.uploading = False
-		if not self.cloudConnection:
-			try:
-				self.cloudConnection = ABMI_Utils.CloudConnection(self.app.cloud_ip, self.app.cloud_user, self.app.cloud_password)
-				self.cloudConnection.connect()
-				self.isConnected = True
-			except Exception as err:
-				print(f"Cloud connection failed: {err}")
-				self.cloudConnection = None
-				self.isConnected = False
-		if self.cloudConnection:
-			try:
-				if not self.cloudConnection.folder_exists("/Training_Data/" + self.app.user_id):
-					print('User Folder not found, creating user folder for ' + str(self.app.user_id))
-					self.cloudConnection.create_user_folder("/Training_Data/" + self.app.user_id)
-				self.cloudDataCount = self.cloudConnection.count_files_in_folder("/Training_Data/" + self.app.user_id)
-				self.status_message = ""
-			except Exception as err:
-				print(f"Failed to refresh cloud data count: {err}")
-				self.status_message = "Failed to load cloud count"
-				self.cloudDataCount = 0
+
+		# Keep reusing the same CloudConnection object (so we're not
+		# reconnecting for no reason), but always verify it's actually
+		# still alive and repair it if not -- an idle FTP session can time
+		# out on the server while we're off in another scene collecting
+		# data, and the old code only ever reconnected the very first time.
+		if self.cloudConnection is None:
+			self.cloudConnection = ABMI_Utils.CloudConnection(self.app.cloud_ip, self.app.cloud_user, self.app.cloud_password)
+		try:
+			self.cloudConnection.ensure_connected()
+			self.isConnected = True
+		except Exception as err:
+			print(f"Cloud connection failed: {err}")
+			self.isConnected = False
+			self.status_message = "Cloud connection failed"
+			self.cloudDataCount = 0
+			return
+
+		try:
+			if not self.cloudConnection.folder_exists("/Training_Data/" + self.app.user_id):
+				print('User Folder not found, creating user folder for ' + str(self.app.user_id))
+				self.cloudConnection.create_user_folder("/Training_Data/" + self.app.user_id)
+			self.cloudDataCount = self.cloudConnection.count_files_in_folder("/Training_Data/" + self.app.user_id)
+			self.status_message = ""
+		except Exception as err:
+			print(f"Failed to refresh cloud data count: {err}")
+			self.status_message = "Failed to load cloud count"
+			self.cloudDataCount = 0
 
 	def go_back(self):
 		self.app.switch_scene("trainer")
@@ -732,17 +753,25 @@ class UploadToCloudScene(Scene):
 		self.upload_thread = threading.Thread(target=self._run_upload, daemon=True)
 		self.upload_thread.start()
 
-	def _run_upload(self):
+	def _run_upload(self, attempt=1, max_attempts=3, retry_delay=3):
 		try:
+			# The connection itself may have gone stale while we were away;
+			# CloudConnection.upload_all_files() will detect and repair
+			# that on its own (and retry individual files internally too).
 			files_uploaded = self.cloudConnection.upload_all_files(remote_root="/Training_Data/" + self.app.user_id, user_id=self.app.user_id, local_root="BMI Trainer Data")
 			print(f"Uploaded {files_uploaded} files to cloud.")
 			self.cloudDataCount = self.cloudConnection.count_files_in_folder("/Training_Data/" + self.app.user_id)
 			self.status_message = "Upload complete!" if files_uploaded else "No files to upload"
-		except Exception as err:
-			print(f"Upload failed: {err}")
-			self.status_message = "Upload failed"
-		finally:
 			self.uploading = False
+		except Exception as err:
+			print(f"Upload failed (attempt {attempt}/{max_attempts}): {err}")
+			if attempt < max_attempts:
+				self.status_message = f"Upload failed, retrying ({attempt}/{max_attempts})..."
+				time.sleep(retry_delay)
+				self._run_upload(attempt=attempt + 1, max_attempts=max_attempts, retry_delay=retry_delay)
+			else:
+				self.status_message = "Upload failed"
+				self.uploading = False
 
 	def go_download(self):
 		self.app.switch_scene("download_from_cloud")
@@ -825,19 +854,22 @@ class DownloadFromCloudScene(Scene):
 		self.buttons.append(button)
 
 	def ensure_connection(self):
-		if not self.cloudConnection:
-			try:
-				self.cloudConnection = ABMI_Utils.CloudConnection(self.app.cloud_ip, self.app.cloud_user, self.app.cloud_password)
-				self.cloudConnection.connect()
-			except Exception as err:
-				print(f"Cloud connection failed: {err}")
-				self.cloudConnection = None
+		# Reuse the same CloudConnection object across visits, but always
+		# verify it's still alive and repair it if the FTP session timed
+		# out while we were away (e.g. running a test / collecting data).
+		if self.cloudConnection is None:
+			self.cloudConnection = ABMI_Utils.CloudConnection(self.app.cloud_ip, self.app.cloud_user, self.app.cloud_password)
+		try:
+			self.cloudConnection.ensure_connected()
+			return True
+		except Exception as err:
+			print(f"Cloud connection failed: {err}")
+			return False
 
 	def on_enter(self):
 		self.bottom_message = ""
 		self.downloading = False
-		self.ensure_connection()
-		if not self.cloudConnection:
+		if not self.ensure_connection():
 			self.availability_message = "Unable to connect"
 			self.model_available = False
 			return
@@ -864,17 +896,24 @@ class DownloadFromCloudScene(Scene):
 		self.download_thread = threading.Thread(target=self._run_download, daemon=True)
 		self.download_thread.start()
 
-	def _run_download(self):
+	def _run_download(self, attempt=1, max_attempts=3, retry_delay=3):
 		try:
-			# Placeholder for future download logic
+			# CloudConnection.download_all_files() detects and repairs a
+			# stale connection on its own, and retries individual files
+			# internally too.
 			self.cloudConnection.download_all_files(remote_root="/Models/" + self.app.user_id, local_root="Model/")
 			self.bottom_message = "Download Complete"
 			print("Successfully downloaded model from cloud.")
-		except Exception as err:
-			print(f"Download failed: {err}")
-			self.bottom_message = "Download failed"
-		finally:
 			self.downloading = False
+		except Exception as err:
+			print(f"Download failed (attempt {attempt}/{max_attempts}): {err}")
+			if attempt < max_attempts:
+				self.bottom_message = f"Download failed, retrying ({attempt}/{max_attempts})..."
+				time.sleep(retry_delay)
+				self._run_download(attempt=attempt + 1, max_attempts=max_attempts, retry_delay=retry_delay)
+			else:
+				self.bottom_message = "Download failed"
+				self.downloading = False
 
 	def go_test(self):
 		self.app.switch_scene("model_test")

@@ -96,6 +96,11 @@ class BCIBoard:
 		self._ch_cfg = [self.STREAM_CFG_DEFAULT.copy() for _ in range(8)]
 		self._ch_last_cfg = [None for _ in range(8)]
 
+		# Serializes check_impedance() calls so the post-measurement cleanup
+		# of one call can't overlap the stop_stream()/lead-off commands of
+		# the next -- the Cyton's serial link is not tolerant of that.
+		self._impedance_lock = threading.Lock()
+
 
 	def connect(self):
 		BoardShim.disable_board_logger()
@@ -387,7 +392,17 @@ class BCIBoard:
 		self._sample_queue = queue.Queue(maxsize=1000)
 		print('[BCIBoard] Recording stopped')
 
-	def check_impedance(self, channels=None):
+	def check_impedance(self, channels=None, on_result=None):
+		"""Measure impedance on each of `channels`.
+
+		If `on_result(ch, z_kohm)` is given, it's called the moment each
+		channel's value is computed -- *before* the post-measurement
+		cleanup (disabling lead-off, resuming the normal stream) runs.
+		That cleanup takes roughly a second and doesn't need to finish
+		before the caller (e.g. the UI) can show the result, so callers
+		that want the result as fast as possible should use the callback
+		instead of waiting for this method to return.
+		"""
 		channels = channels or self.channels
 		results = []
 
@@ -395,6 +410,13 @@ class BCIBoard:
 			print("Board not connected. Cannot check impedance.")
 			return results
 
+		# Only one impedance check should be talking to the board at a
+		# time -- if a previous call's cleanup is still finishing up in
+		# another thread, wait for it rather than racing serial commands.
+		with self._impedance_lock:
+			return self._check_impedance_locked(channels, results, on_result)
+
+	def _check_impedance_locked(self, channels, results, on_result):
 		print("Starting impedance check...")
 
 		# Stop the background stream worker thread (if running) so it does not
@@ -445,6 +467,17 @@ class BCIBoard:
 					  f"rail%={100.0*_n_rail/len(_raw):.1f} std_uV={gui_rms:.2f} -> {z_kohm:.2f} kΩ")
 				# --- end DIAG ---
 				print(f"CH{ch} ({color}): {z_kohm:.2f} kΩ")
+
+				# Hand the result to the caller now -- everything below this
+				# point is just restoring the board to its normal streaming
+				# state and doesn't need to finish before the UI shows the
+				# number the user is waiting on.
+				if on_result is not None:
+					try:
+						on_result(ch, z_kohm)
+					except Exception as cb_err:
+						print(f"on_result callback failed: {cb_err}")
+
 				self.board.stop_stream()
 				# Same quiet-the-link settle before restoring the normal channel config.
 				time.sleep(SETTLE_SEC)
@@ -458,61 +491,131 @@ class BCIBoard:
 			except Exception as e:
 				results.append((ch, float('nan')))
 				print(f"Failed to measure CH{ch}: {e}")
+				if on_result is not None:
+					try:
+						on_result(ch, float('nan'))
+					except Exception as cb_err:
+						print(f"on_result callback failed: {cb_err}")
 
 		print("Impedance check complete.")
 		return results
 
 class CloudConnection:
-	def __init__(self, host="ftp.yourdomain.com", user="yourusername", password="yourpassword", timeout=10):
+	def __init__(self, host="ftp.yourdomain.com", user="yourusername", password="yourpassword", timeout=10, max_retries=3, retry_delay=2):
 		self.host = host
 		self.user = user
 		self.password = password
 		self.timeout = timeout
 		self.ftp = None
-		
+		self.max_retries = max_retries  # how many times to retry a failed connect/operation
+		self.retry_delay = retry_delay  # seconds to wait between retries
+
 	def connect(self):
 		try:
 			self.ftp = FTP(self.host, timeout=self.timeout)
 			self.ftp.login(self.user, self.password)
 		except Exception as e:
+			self.ftp = None
 			raise Exception(f"Failed to connect to cloud: {e}")
 		return True
-	
-	def folder_exists(self, user_id):
+
+	def is_alive(self):
+		"""Actually probe the control connection instead of just checking
+		it's non-None -- an idle FTP session can time out/drop on the
+		server side while we still hold a (now dead) socket object."""
 		if self.ftp is None:
-			self.connect()
-		folder_path = ("/home/File-EXTERNAL/B2J" + user_id)
-		try:
-			self.ftp.cwd(folder_path)
-			return True
-		except error_perm:
 			return False
+		try:
+			self.ftp.voidcmd("NOOP")
+			return True
+		except Exception:
+			return False
+
+	def ensure_connected(self):
+		"""Guarantee a live FTP session, reconnecting (with retries) if the
+		cached connection has died. Call this before any FTP command instead
+		of the old `if self.ftp is None` check, which never noticed a
+		connection that time out after being idle (e.g. switching scenes to
+		collect data and coming back)."""
+		if self.is_alive():
+			return
+
+		last_err = None
+		for attempt in range(1, self.max_retries + 1):
+			if self.ftp is not None:
+				try:
+					self.ftp.close()
+				except Exception:
+					pass
+				self.ftp = None
+			try:
+				self.connect()
+				return
+			except Exception as e:
+				last_err = e
+				print(f"Cloud reconnect attempt {attempt}/{self.max_retries} failed: {e}")
+				if attempt < self.max_retries:
+					time.sleep(self.retry_delay)
+		raise Exception(f"Unable to (re)connect to cloud after {self.max_retries} attempts: {last_err}")
+
+	def _run_with_retry(self, operation):
+		"""Run `operation` (a zero-arg callable that uses self.ftp), making
+		sure the connection is alive first. If the operation itself throws
+		(e.g. the connection dropped mid-call), reconnect and retry it a
+		limited number of times before giving up."""
+		last_err = None
+		for attempt in range(1, self.max_retries + 1):
+			try:
+				self.ensure_connected()
+				return operation()
+			except Exception as e:
+				last_err = e
+				print(f"Cloud operation failed (attempt {attempt}/{self.max_retries}): {e}")
+				# Force a full reconnect on the next attempt -- whatever we
+				# have is presumed dead.
+				self.ftp = None
+				if attempt < self.max_retries:
+					time.sleep(self.retry_delay)
+		raise Exception(f"Cloud operation failed after {self.max_retries} attempts: {last_err}")
+
+	def folder_exists(self, user_id):
+		folder_path = ("/home/File-EXTERNAL/B2J" + user_id)
+
+		def _check():
+			try:
+				self.ftp.cwd(folder_path)
+				return True
+			except error_perm:
+				return False
+
+		try:
+			return self._run_with_retry(_check)
 		except Exception as e:
 			print(f"Failed to check folder: {e}")
 			return False
-	
+
 	def create_user_folder(self, user_id):
-		if self.ftp is None:
-			self.connect()
-		try:
-			self.ftp.mkd("/home/File-EXTERNAL/B2J" + user_id)
-		except error_perm as e:
-			raise Exception(f"Failed to create user folder: {e}")
-		except Exception as e:
-			raise Exception(f"Failed to create user folder: {e}")
-		return True
-	
+		def _create():
+			try:
+				self.ftp.mkd("/home/File-EXTERNAL/B2J" + user_id)
+			except error_perm as e:
+				raise Exception(f"Failed to create user folder: {e}")
+			return True
+
+		return self._run_with_retry(_create)
+
 	def count_files_in_folder(self, user_id):
-		try:
+		def _count():
 			self.ftp.cwd(f"/home/File-EXTERNAL/B2J{user_id}/")
 			return len(self.ftp.nlst())
+
+		try:
+			return self._run_with_retry(_count)
 		except Exception as e:
 			raise Exception(f"Failed to count files in user folder: {e}")
-		return 0
-	
+
 	def upload_all_files(self, remote_root, user_id, local_root="BMI Trainer Data"):
-		if self.ftp is None:
-			self.connect()
+		self.ensure_connected()
 
 		base_path = Path(local_root)
 		if not base_path.exists():
@@ -528,12 +631,17 @@ class CloudConnection:
 			return 0
 		
 		remote_base = f"/home/File-EXTERNAL/B2J{remote_root}"
+
+		def _cwd_remote():
+			try:
+				self.ftp.cwd(remote_base)
+			except error_perm:
+				print(f"User folder {remote_base} does not exist, creating...")
+				self.create_user_folder(user_id)
+				self.ftp.cwd(remote_base)
+
 		try:
-			self.ftp.cwd(remote_base)
-		except error_perm:
-			print(f"User folder {remote_base} does not exist, creating...")
-			self.create_user_folder(user_id)
-			self.ftp.cwd(remote_base)
+			self._run_with_retry(_cwd_remote)
 		except Exception as e:
 			print(f"Failed to change directory to {remote_base}: {e}")
 			return 0
@@ -552,37 +660,55 @@ class CloudConnection:
 				if flattened in existing_remote_files:
 					print(f"Skipping existing file on cloud: {flattened}")
 					continue
-				try:
+
+				def _upload_one(file_path=file_path, flattened=flattened):
+					# Re-select the remote directory in case reconnecting
+					# dropped us back into the FTP server's default cwd.
+					self.ftp.cwd(remote_base)
 					with open(file_path, "rb") as fh:
 						self.ftp.storbinary(f"STOR {flattened}", fh)
+
+				try:
+					self._run_with_retry(_upload_one)
 					files_uploaded += 1
 					existing_remote_files.add(flattened)
 				except Exception as err:
-					print(f"Failed to upload {file_path}: {err}")
+					print(f"Failed to upload {file_path} after retries: {err}")
 		return files_uploaded
 
 	def download_all_files(self, remote_root, local_root):
-		if self.ftp is None:
-			self.connect()
+		self.ensure_connected()
 
 		remote_base = f"/home/File-EXTERNAL/B2J{remote_root}"
 		try:
-			self.ftp.cwd(remote_base)
+			self._run_with_retry(lambda: self.ftp.cwd(remote_base))
 		except Exception as e:
 			raise Exception(f"Failed to access remote folder '{remote_root}': {e}")
 
 		local_path = Path(local_root)
 		local_path.mkdir(parents=True, exist_ok=True)
 
-		files_downloaded = 0
 		try:
-			for filename in self.ftp.nlst():
-				local_file = local_path / filename
+			remote_files = self.ftp.nlst()
+		except Exception as e:
+			raise Exception(f"Failed to list files in '{remote_root}': {e}")
+
+		files_downloaded = 0
+		for filename in remote_files:
+			local_file = local_path / filename
+
+			def _download_one(filename=filename, local_file=local_file):
+				# Re-select the remote directory in case reconnecting
+				# dropped us back into the FTP server's default cwd.
+				self.ftp.cwd(remote_base)
 				with open(local_file, "wb") as f:
 					self.ftp.retrbinary(f"RETR {filename}", f.write)
+
+			try:
+				self._run_with_retry(_download_one)
 				files_downloaded += 1
-		except Exception as e:
-			raise Exception(f"Failed to download files from '{remote_root}': {e}")
+			except Exception as e:
+				raise Exception(f"Failed to download '{filename}' from '{remote_root}': {e}")
 
 		return files_downloaded
 
