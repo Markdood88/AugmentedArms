@@ -2,6 +2,7 @@ import pygame
 import sys
 import random
 import math
+import socket
 import threading
 import serial
 import Arm_Utils
@@ -107,6 +108,65 @@ def play_animation(motion_number):
 		if not scan_active:
 			send_m5("ANIM_END")
 	threading.Thread(target=worker, daemon=True).start()
+
+def trigger_bmi_playback(slot):
+	"""Fire Playback 1/2/3 (slot = 1, 2 or 3) from a BMI UDP message.
+
+	Behaves exactly like the controller A/B/C buttons and the piezo option
+	scan: only acts during Live Mode, ignored while the arms are disabled or
+	an animation is already running.
+	"""
+	if current_scene != SCENE_LIVE_MODE:
+		print(f"[BMI] ignored (not Live Mode, scene={current_scene})")
+		return
+	if arms_disabled:
+		print("[BMI] ignored (arms disabled)")
+		return
+	if animation_active():
+		print("[BMI] ignored (animation already running)")
+		return
+	print(f"[BMI] triggering Playback {slot}")
+	for i in range(3):
+		playback_button_states[i] = (i == slot - 1)
+	play_animation(slot)
+	send_m5(["A", "B", "C"][slot - 1])
+
+def bmi_udp_listener():
+	"""Listen for 'BMI: <1|2|3>' datagrams and route them to Playback 1/2/3.
+
+	Malformed packets, and any packet received outside Live Mode, are ignored.
+	"""
+	try:
+		sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		sock.bind(("", BMI_UDP_PORT))
+	except OSError as e:
+		print(f"[ERROR] Could not bind BMI UDP port {BMI_UDP_PORT}: {e}")
+		return
+
+	print(f"[OK] BMI UDP listener on port {BMI_UDP_PORT}")
+
+	while True:
+		try:
+			data, _addr = sock.recvfrom(1024)
+		except OSError:
+			continue
+
+		raw = data.decode("utf-8", errors="ignore")
+		# Keep only printable chars so trailing NULs / control bytes from the
+		# sender don't defeat the parse.
+		text = "".join(ch for ch in raw if ch.isprintable()).strip()
+		print(f"[RX UDP {_addr[0]}] {text!r}")
+
+		parts = text.split(":", 1)
+		if len(parts) != 2 or parts[0].strip().upper() != "BMI":
+			continue
+
+		value = parts[1].strip()
+		if not value.isdigit() or int(value) not in (1, 2, 3):
+			continue
+
+		trigger_bmi_playback(int(value))
 
 def apply_gesture(gesture_name):
 	def worker():
@@ -701,6 +761,9 @@ GESTURE_POSITIONS_FILE = "/home/b2j/Desktop/AugmentedArms/Arm_Gesture_Positions.
 gesture_axis_x_active = False
 gesture_axis_y_active = False
 
+# BMI UDP Vars (Live Mode animation triggers over the network)
+BMI_UDP_PORT = 21623
+
 # M5 Serial Vars
 m5_baud = 115200
 scan_active = False  # True while a piezo-driven audio scan is in progress
@@ -769,6 +832,9 @@ if m5_port is None:
 	print("[ERROR] No M5 serial port found")
 else:
 	print(f"[OK] M5 port found: {m5_port}")
+
+# BMI UDP listener (Live Mode network triggers for Playback 1/2/3)
+threading.Thread(target=bmi_udp_listener, daemon=True).start()
 
 # ---- MAIN LOOP ----
 while True:
