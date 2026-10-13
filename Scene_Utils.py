@@ -1088,6 +1088,10 @@ class ModelTestScene(Scene):
 						else:
 							label_map = {1: "Left", 2: "Center", 3: "Right"}
 							self.prediction_message = f"Model predicted: {label_map.get(result, 'Unknown')}"
+							# Notify the live animation receiver as soon as the model
+							# produces a direction.  Keep this before audio playback so
+							# the network trigger has the lowest possible latency.
+							self.app.send_bmi_udp(result)
 							sound_map = {
 								1: "Sounds/prediction_left.wav",
 								2: "Sounds/prediction_center.wav",
@@ -1377,7 +1381,7 @@ class EmergencyDisconnectedScene(Scene):
 
 # --- Main App Class ---
 class BMITrainer:
-	def __init__(self):
+	def __init__(self, bmi_udp_host=None, bmi_udp_port=None):
 		# Initialize Pygame
 		pygame.init()
 
@@ -1405,6 +1409,11 @@ class BMITrainer:
 		self.model_Folder = None
 		self.testing_Folder = None
 		self.recording_lcr_counts = None
+		self.bmi_udp_host = bmi_udp_host or os.environ.get("BMI_UDP_HOST", "127.0.0.1")
+		try:
+			self.bmi_udp_port = int(bmi_udp_port or os.environ.get("BMI_UDP_PORT", "21623"))
+		except (TypeError, ValueError):
+			self.bmi_udp_port = 21623
   
 		#TCP credentials
 		self.cloud_ip = "131.113.139.72"
@@ -1453,6 +1462,18 @@ class BMITrainer:
    
 	def refresh_lcr_count(self):
 		self.recording_lcr_counts = ABMI_Utils.countRecordings(self.user_id, base_folder="BMI Trainer Data/")
+
+	def send_bmi_udp(self, direction):
+		"""Send the receiver-compatible BMI direction datagram."""
+		if direction not in (1, 2, 3):
+			return
+		message = f"BMI: {direction}".encode("ascii")
+		try:
+			with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+				sock.sendto(message, (self.bmi_udp_host, self.bmi_udp_port))
+			print(f"[TX UDP {self.bmi_udp_host}:{self.bmi_udp_port}] BMI: {direction}")
+		except OSError as err:
+			print(f"[WARN] BMI UDP send failed ({self.bmi_udp_host}:{self.bmi_udp_port}): {err}")
 
 	def handle_events(self):
 		for event in pygame.event.get():
