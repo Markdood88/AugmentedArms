@@ -209,16 +209,53 @@ class RoboticArm:
 	#-----------------------------------------------------------------------
 	def update_torque_status(self):
 		"""Refresh torque-enabled cache for all motors."""
-		for dxl_id in self.dxl_ids:
-			torque_enabled, dxl_comm_result, dxl_error = \
-				self.packetHandler.read1ByteTxRx(
+		with self.lock:
+			for dxl_id in self.dxl_ids:
+				torque_enabled, dxl_comm_result, dxl_error = \
+					self.packetHandler.read1ByteTxRx(
+						self.portHandler, dxl_id,
+						self.ADDR_PRO_TORQUE_ENABLE)
+				if dxl_comm_result == self.COMM_SUCCESS and dxl_error == 0:
+					self.torque_enabled[dxl_id] = \
+						(torque_enabled == self.TORQUE_ENABLE)
+				else:
+					self.torque_enabled[dxl_id] = None
+
+	#-----------------------------------------------------------------------
+	#----Hardware Error Helpers
+	#-----------------------------------------------------------------------
+	def read_hardware_errors(self):
+		"""Return {motor_id: error_bits} for every motor reporting a hardware error."""
+		errors = {}
+		with self.lock:
+			for dxl_id in self.dxl_ids:
+				status, dxl_comm_result, dxl_error = self.packetHandler.read1ByteTxRx(
 					self.portHandler, dxl_id,
-					self.ADDR_PRO_TORQUE_ENABLE)
-			if dxl_comm_result == self.COMM_SUCCESS and dxl_error == 0:
-				self.torque_enabled[dxl_id] = \
-					(torque_enabled == self.TORQUE_ENABLE)
-			else:
+					self.ADDR_PRO_HARDWARE_ERROR_STATUS)
+				if dxl_comm_result == self.COMM_SUCCESS and status != 0:
+					errors[dxl_id] = status
+		return errors
+
+	def clear_hardware_errors(self, reboot_wait=1.0):
+		"""Reboot any motor that shut itself down (e.g. overload) so its torque can be
+		re-enabled. Motors still faulted afterwards go into faulty_motors and are
+		skipped during playback."""
+		errors = self.read_hardware_errors()
+		if not errors:
+			self.faulty_motors = []
+			return
+		with self.lock:
+			for dxl_id, status in errors.items():
+				logging.warning(f"{self.device_name} ID {dxl_id}: Hardware error 0x{status:02X}, rebooting.")
+				print(f"{self.device_name} ID {dxl_id}: Hardware error 0x{status:02X}, rebooting.")
+				self.packetHandler.reboot(self.portHandler, dxl_id)
 				self.torque_enabled[dxl_id] = None
+		# Wait outside the lock so Lock/Release aren't blocked while the motors restart
+		time.sleep(reboot_wait)
+		self.faulty_motors = list(self.read_hardware_errors())
+		if self.faulty_motors:
+			logging.error(f"{self.device_name}: Motors still faulted after reboot: {self.faulty_motors}")
+			print(f"{self.device_name}: Motors still faulted after reboot: {self.faulty_motors}")
 	
 	def set_is_stop(self, is_stop):
 		with self.condition:
@@ -245,10 +282,12 @@ class RoboticArm:
 				self.portHandler, dxl_id,
 				self.ADDR_PRO_TORQUE_ENABLE, torque_status)
 			if dxl_comm_result != self.COMM_SUCCESS:
+				self.torque_enabled[dxl_id] = None  # Unknown state, so the next call retries
 				logging.error(f"{self.device_name} ID {dxl_id}: "
 							  f"Torque change failed: "
 							  f"{self.packetHandler.getTxRxResult(dxl_comm_result)}")
 			elif dxl_error != 0:
+				self.torque_enabled[dxl_id] = None  # Unknown state, so the next call retries
 				logging.error(f"{self.device_name} ID {dxl_id}: "
 							  f"Torque change error: "
 							  f"{self.packetHandler.getRxPacketError(dxl_error)}")
@@ -284,6 +323,66 @@ class RoboticArm:
 			self.packetHandler.write4ByteTxRx(
 				self.portHandler, motor_id,
 				self.ADDR_PRO_GOAL_POSITION, position_value)
+
+	def set_profile(self, speed):
+		"""Set Profile Velocity and Acceleration on all motors (0 = unlimited)."""
+		with self.lock:
+			for dxl_id in self.dxl_ids:
+				if dxl_id in self.faulty_motors:
+					continue
+				self.packetHandler.write4ByteTxRx(
+					self.portHandler, dxl_id,
+					self.ADDR_PRO_PROFILE_ACCELERATION, speed)
+				self.packetHandler.write4ByteTxRx(
+					self.portHandler, dxl_id,
+					self.ADDR_PRO_PROFILE_VELOCITY, speed)
+
+	def write_goal_positions(self, positions):
+		"""Sync-write {motor_id: position} goals, skipping faulty motors."""
+		groupSyncWrite = GroupSyncWrite(
+			self.portHandler, self.packetHandler,
+			self.ADDR_PRO_GOAL_POSITION,
+			self.ADDR_PRO_GOAL_POSITION_LEN)
+		with self.lock:
+			for dxl_id, position_value in positions.items():
+				if dxl_id in self.faulty_motors:
+					continue
+				position_value = int(position_value)
+				groupSyncWrite.addParam(dxl_id, [
+					DXL_LOBYTE(DXL_LOWORD(position_value)),
+					DXL_HIBYTE(DXL_LOWORD(position_value)),
+					DXL_LOBYTE(DXL_HIWORD(position_value)),
+					DXL_HIBYTE(DXL_HIWORD(position_value))])
+			dxl_comm_result = groupSyncWrite.txPacket()
+			if dxl_comm_result != self.COMM_SUCCESS:
+				logging.error(f"{self.device_name}: Failed to send positions: "
+							  f"{self.packetHandler.getTxRxResult(dxl_comm_result)}")
+
+	def move_to_start(self, row, speed=100, timeout=5.0, threshold=100):
+		"""Ease into a recording's first frame at a limited speed, so heavy joints
+		don't snap there at full speed from wherever they were left (e.g. after a
+		release). Returns False if stopped (Lock/Release) on the way."""
+		goals = {self.dxl_ids[i]: int(position) for i, position in enumerate(row)}
+		self.set_profile(speed)
+		try:
+			self.write_goal_positions(goals)
+			deadline = time.time() + timeout
+			while time.time() < deadline:
+				with self.condition:
+					if self.is_stop:
+						# Frame 0 may still be far away, so stop where we are
+						self.write_goal_positions(self.get_current_positions())
+						return False
+				present = self.get_current_positions()
+				if all(abs(present.get(dxl_id, goal) - goal) <= threshold
+					   for dxl_id, goal in goals.items() if dxl_id not in self.faulty_motors):
+					return True
+				time.sleep(0.05)
+			logging.warning(f"{self.device_name}: Timed out easing into first frame.")
+			return True
+		finally:
+			# Recorded frames stream unthrottled, as before
+			self.set_profile(0)
 
 	def is_motor_at_position(self, motor_id, target_position, threshold=100):
 		"""Return True if motor is within threshold of target."""
@@ -406,6 +505,11 @@ class RoboticArm:
 				return
 			print("Playing: " + csv_filename)
 
+			# Recover motors that shut down (e.g. overload) since the last playback,
+			# then re-read real torque states so the cache can't skip re-enabling them
+			self.clear_hardware_errors()
+			self.update_torque_status()
+
 			# Enable Movement
 			self.set_is_stop(False)
 			self.enable_all_motor_torque(True)
@@ -419,6 +523,9 @@ class RoboticArm:
 				self.ADDR_PRO_GOAL_POSITION_LEN)
 			with open(csv_filepath, mode='r') as file:
 				reader = list(csv.reader(file))
+				if reader and not self.move_to_start(reader[0]):
+					logging.info(f"{self.device_name}: Movement stopped.")
+					return
 				desired_interval = 1.0 / frequency
 				start_time = time.time()
 				frame_count = 0
