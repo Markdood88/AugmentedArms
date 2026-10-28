@@ -10,16 +10,22 @@ GPIO.setwarnings(False)
 class PiezoSensor:
 	def __init__(self, pin, cooldown=0.2):
 		self.pin = pin
+		self.cooldown = cooldown
+		self._last_tap = 0.0
 		self._tap_flag = False
 		self._flag_lock = threading.Lock()
 		GPIO.setup(self.pin, GPIO.IN)
-		# Sensor idles LOW and pulses HIGH on a tap; GPIO's own bouncetime
-		# debounce handles the ringing, same as the known-working standalone test.
-		GPIO.add_event_detect(self.pin, GPIO.RISING, callback=self._handle_tap, bouncetime=int(cooldown * 1000))
+		# Sensor idles LOW and pulses HIGH on a tap. On rpi-lgpio, bouncetime is a
+		# glitch filter (the level must stay stable that long), so keep it short like
+		# the known-working standalone test and enforce the cooldown in software.
+		GPIO.add_event_detect(self.pin, GPIO.RISING, callback=self._handle_tap, bouncetime=100)
 
 	def _handle_tap(self, channel):
+		now = time.monotonic()
 		with self._flag_lock:
-			self._tap_flag = True
+			if now - self._last_tap >= self.cooldown:
+				self._last_tap = now
+				self._tap_flag = True
 
 	def is_pressed(self):
 		"""Returns True if currently pressed"""
