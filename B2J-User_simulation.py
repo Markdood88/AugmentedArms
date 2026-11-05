@@ -18,9 +18,15 @@ the wire for that trial, over either the M5 serial port or UDP:
   5. Triggering         waits for the center button / E, then sends T,<1|2|3>
                         and LED all off, then returns to idle
 
-Serial is written exactly like B2J-User_2x.py (port opened per message, 115200 baud,
-UTF-8, newline terminated). UDP carries the same newline-terminated text lines, one
-per datagram.
+Serial uses the same bytes as B2J-User_2x.py (115200 baud, UTF-8, newline terminated).
+Like the real app, the latest frame is re-sent as fast as possible with no pacing; the
+simulator keeps the port open so it is at least as fast as the real app (the serial
+link is the only limit). The achieved E-message rate is printed after each recording.
+
+UDP uses the BMI Trainer format instead: the recording/prediction timing is the same,
+but the only datagram sent is the bare ASCII text "BMI: 1" / "BMI: 2" / "BMI: 3"
+(Left / Center / Right) when you press the trigger. That is what ALS-User.py listens
+for (port 21623). No S,/E,/T, lines are sent over UDP.
 
 Controls
   Mode screen : Left/Right + Enter, or tap an option
@@ -104,14 +110,41 @@ class Transport:
 
 
 class SerialTransport(Transport):
-	"""Identical to sendToM5() in B2J-User_2x.py."""
+	"""Same bytes as sendToM5() in B2J-User_2x.py (UTF-8 line + newline, 115200 baud).
 
-	def __init__(self, port, baud=M5_BAUD):
+	B2J-User_2x.py opens and closes the port for every message. Here the port is opened
+	once and kept open (keep_open=True), so the send rate is limited only by the serial
+	link, which makes the simulator at least as fast as the real app. Pass
+	keep_open=False to open/close per message like the original."""
+
+	def __init__(self, port, baud=M5_BAUD, keep_open=True):
 		self.port = port
 		self.baud = baud
+		self.keep_open = keep_open
 		self.label = f"SERIAL {port}"
 		self._lock = threading.Lock()
+		self._ser = None
 		self._last_error_print = 0.0
+
+	def _write(self, data):
+		if not self.keep_open:
+			with serial.Serial(self.port, self.baud, timeout=1) as ser:
+				ser.write(data)
+				ser.flush()
+			return
+		if self._ser is None or not self._ser.is_open:
+			self._ser = serial.Serial(self.port, self.baud, timeout=1)
+		self._ser.write(data)
+		self._ser.flush()
+
+	def close(self):
+		with self._lock:
+			if self._ser is not None:
+				try:
+					self._ser.close()
+				except Exception:
+					pass
+				self._ser = None
 
 	def send(self, message, quiet=False):
 		if not self.port:
@@ -123,12 +156,16 @@ class SerialTransport(Transport):
 		message = message.strip() + "\n"
 		with self._lock:
 			try:
-				with serial.Serial(self.port, self.baud, timeout=1) as ser:
-					ser.write(message.encode("utf-8"))
-					ser.flush()
+				self._write(message.encode("utf-8"))
 				if not quiet:
 					print(f"[TX M5] {message.strip()}")
-			except serial.SerialException as e:
+			except (serial.SerialException, OSError) as e:
+				if self._ser is not None:
+					try:
+						self._ser.close()
+					except Exception:
+						pass
+					self._ser = None   # reopen on the next message
 				now = time.monotonic()
 				if now - self._last_error_print > 1.0:
 					self._last_error_print = now
@@ -136,7 +173,7 @@ class SerialTransport(Transport):
 
 
 class UdpTransport(Transport):
-	"""Same text lines as the serial protocol, one per UDP datagram."""
+	"""BMI Trainer's UDP protocol: bare 'BMI: <1|2|3>' datagrams (ASCII, no newline)."""
 
 	def __init__(self, host, port):
 		self.host = host
@@ -150,11 +187,11 @@ class UdpTransport(Transport):
 		if not message:
 			return
 
-		message = message.strip() + "\n"
+		message = message.strip()
 		try:
-			self._sock.sendto(message.encode("utf-8"), (self.host, self.port))
+			self._sock.sendto(message.encode("ascii"), (self.host, self.port))
 			if not quiet:
-				print(f"[TX UDP {self.host}:{self.port}] {message.strip()}")
+				print(f"[TX UDP {self.host}:{self.port}] {message}")
 		except OSError as e:
 			now = time.monotonic()
 			if now - self._last_error_print > 1.0:
@@ -207,6 +244,9 @@ def play_sound(filepath):
 class Simulator:
 	def __init__(self, transport):
 		self.transport = transport
+		# UDP carries only the BMI trigger message; the M5 serial traffic (S,/E,/T,)
+		# is not sent over UDP.
+		self.bmi_udp = isinstance(transport, UdpTransport)
 		self.state = "idle"          # idle / recording / predicting / triggering / sending
 		self.prediction = None
 		self.progress = 0.0          # 0..1 through the recording
@@ -222,6 +262,8 @@ class Simulator:
 		self.transport.send(f"S,Ch{ch}-{val}")
 
 	def send_led_command(self, ch, val):
+		if self.bmi_udp:
+			return
 		if ch == 9:
 			for i in range(1, 9):
 				self._send_single_command(i, val)
@@ -233,6 +275,8 @@ class Simulator:
 		self.send_led_command(9, 0)
 
 	def send_led_pattern(self, choice):
+		if self.bmi_udp:
+			return
 		channels = LED_CHANNELS[choice]
 		for ch in channels:
 			self.send_led_command(ch, 3)
@@ -279,7 +323,8 @@ class Simulator:
 		self._sent = 0
 		self._stream_stop.clear()
 		streamer = threading.Thread(target=self._stream_loop, daemon=True)
-		streamer.start()
+		if not self.bmi_udp:
+			streamer.start()
 
 		t0 = time.monotonic()
 		i = 0
@@ -310,13 +355,17 @@ class Simulator:
 					time.sleep(delay)
 		finally:
 			self._stream_stop.set()
-			streamer.join(timeout=3)
+			if streamer.is_alive():
+				streamer.join(timeout=3)
 			with self._frame_lock:
 				self._latest_frame = None
 
 		took = time.monotonic() - t0
-		print(f"[SIM] Recording done: {i} samples generated, {self._sent} E messages sent "
-			  f"in {took:.1f}s ({self._sent / took:.0f}/s)")
+		if self.bmi_udp:
+			print(f"[SIM] Recording done ({took:.1f}s). UDP mode: no data frames are sent.")
+		else:
+			print(f"[SIM] Recording done: {i} samples generated, {self._sent} E messages sent "
+				  f"in {took:.1f}s ({self._sent / took:.0f}/s)")
 
 	def run_trial(self, choice):
 		"""Everything B2J-User_2x does between a start press and the 'triggering' prompt."""
@@ -345,7 +394,10 @@ class Simulator:
 		"""handleTriggering(): play the prediction sound, send T,<n>, LEDs off, back to idle."""
 		try:
 			play_sound(SOUND_MAP[self.prediction])
-			self.transport.send(f"T,{self.prediction}")
+			if self.bmi_udp:
+				self.transport.send(f"BMI: {self.prediction}")
+			else:
+				self.transport.send(f"T,{self.prediction}")
 			self.send_led_all_off()
 		finally:
 			self.prediction = None
