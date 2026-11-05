@@ -23,10 +23,11 @@ Like the real app, the latest frame is re-sent as fast as possible with no pacin
 simulator keeps the port open so it is at least as fast as the real app (the serial
 link is the only limit). The achieved E-message rate is printed after each recording.
 
-UDP uses the BMI Trainer format instead: the recording/prediction timing is the same,
-but the only datagram sent is the bare ASCII text "BMI: 1" / "BMI: 2" / "BMI: 3"
-(Left / Center / Right) when you press the trigger. That is what ALS-User.py listens
-for (port 21623). No S,/E,/T, lines are sent over UDP.
+UDP: the trigger is the BMI Trainer format, the bare ASCII text "BMI: 1" / "BMI: 2" /
+"BMI: 3" (Left / Center / Right) sent when you press the trigger, which is what
+ALS-User.py listens for (port 21623). During recording the E,<frame> lines are also
+flooded over UDP, unpaced (no newline, one per datagram), to stress the receiver.
+No S, or T, lines are sent over UDP.
 
 Controls
   Mode screen : Left/Right + Enter, or tap an option
@@ -179,7 +180,7 @@ class UdpTransport(Transport):
 		self.host = host
 		self.port = port
 		self.label = f"UDP {host}:{port}"
-		self.min_interval = 1.0 / SAMPLE_RATE
+		self.min_interval = 0.0   # unpaced, like serial: flood E frames as fast as possible
 		self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self._last_error_print = 0.0
 
@@ -244,8 +245,8 @@ def play_sound(filepath):
 class Simulator:
 	def __init__(self, transport):
 		self.transport = transport
-		# UDP carries only the BMI trigger message; the M5 serial traffic (S,/E,/T,)
-		# is not sent over UDP.
+		# UDP sends the E,<frame> data stream plus the BMI trigger message; the LED
+		# lines (S,) and T, are serial-only.
 		self.bmi_udp = isinstance(transport, UdpTransport)
 		self.state = "idle"          # idle / recording / predicting / triggering / sending
 		self.prediction = None
@@ -323,8 +324,7 @@ class Simulator:
 		self._sent = 0
 		self._stream_stop.clear()
 		streamer = threading.Thread(target=self._stream_loop, daemon=True)
-		if not self.bmi_udp:
-			streamer.start()
+		streamer.start()
 
 		t0 = time.monotonic()
 		i = 0
@@ -355,17 +355,13 @@ class Simulator:
 					time.sleep(delay)
 		finally:
 			self._stream_stop.set()
-			if streamer.is_alive():
-				streamer.join(timeout=3)
+			streamer.join(timeout=3)
 			with self._frame_lock:
 				self._latest_frame = None
 
 		took = time.monotonic() - t0
-		if self.bmi_udp:
-			print(f"[SIM] Recording done ({took:.1f}s). UDP mode: no data frames are sent.")
-		else:
-			print(f"[SIM] Recording done: {i} samples generated, {self._sent} E messages sent "
-				  f"in {took:.1f}s ({self._sent / took:.0f}/s)")
+		print(f"[SIM] Recording done: {i} samples generated, {self._sent} E messages sent "
+			  f"in {took:.1f}s ({self._sent / took:.0f}/s)")
 
 	def run_trial(self, choice):
 		"""Everything B2J-User_2x does between a start press and the 'triggering' prompt."""
